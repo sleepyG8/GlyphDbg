@@ -30,3 +30,7 @@ Notepad for storing anything you want during a debugging session
 ## Kratos.exe
 
 PE builder, can build full runnable PEs from memory
+
+## rsrcWalker.dll
+
+Walks the PE resource directory from disk. the source can be found under the rsrc directory here.
