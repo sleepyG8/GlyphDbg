@@ -1954,6 +1954,26 @@ printf("Extension loaded...\n");
 return TRUE;
 } 
 
+int getRsrc(char* fileName) {
+
+    typedef int (__stdcall RsrcWalk)(char* fileName);
+
+    void* mem = LoadLibrary("rsrcWalk.dll");
+
+    if (!mem) {
+        writeCon("\nPlace rsrcWalk.dll into the working directory...\n");
+        return 0;
+    }
+
+    RsrcWalk* walker = (RsrcWalk*)GetProcAddress(mem, "getRsrc");
+
+    if (!walker) return 0;
+
+    walker(fileName);
+
+    return 0;
+
+}
 // Get processes by name and return its ID 
 DWORD threadid; // Global
 DWORD GetProc(wchar_t* procName, DWORD procId) {
@@ -3961,6 +3981,13 @@ BOOL WINAPI debug(LPCVOID param) {
                                         //     convertEndian(buff);
                                         // }
                                         
+                                        else if (mystrcmp(buff, "!rsrs") == 0) {
+                                            writeCon("Path to file?\n");
+                                            char rsrcBuff[256];
+                                            fgets(rsrcBuff, sizeof(rsrcBuff), stdin);
+                                            rsrcBuff[strcspn(rsrcBuff, "\n")] = '\0';
+                                            getRsrc(rsrcBuff);
+                                        }
                                         else {
                                             writeCon("Wrong command\n");
                                         }
