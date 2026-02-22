@@ -20,6 +20,42 @@
 
 CONTEXT context;
 
+    // int seDebug;
+    // int pebPatch;
+    // int tebCheck;
+    // int Notes;
+    // int entropyCheck;
+    // int reserved;       // For future use and adding new packs
+    // int reserved2;
+    // int reserved3;
+
+typedef struct {
+    int isActive;
+    char name[25];
+} packEntry;
+
+typedef struct {
+    packEntry entry[8];
+} EnabledPacks;
+EnabledPacks* packs;
+
+int fillPack(char* name) {
+    if (strlen(name) > 25) {
+        printf("Name must be 25 characters max\n");
+        return 1;
+    }
+    for (int i=0; i < 8; i++) {
+        if (strcmp(((char*)packs) + (i*29 + 4), name) == 0) return 2;   // Name check
+        if (((unsigned char*)packs)[i * 29] == 0) {                     // Empty entry find
+            ((unsigned char*)packs)[i * 29] = 1;
+            for (int j=0; j < strlen(name); j++) {
+                ((unsigned char*)packs)[i*29+4+j] = (unsigned char*)name[j];
+            }
+            return 0;
+        } 
+    }
+}
+
 struct mystructs {
 
 PPEB pebaddr;
@@ -1225,13 +1261,11 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) 
     //Entropy Check
     HANDLE hEdll = LoadLibrary("entropyCheck.dll");
     if (hEdll) {
-
+    fillPack("EntropyCheck");
     pCheckEntropy CE = (pCheckEntropy)GetProcAddress(hEdll, "CheckEntropy");
     if (!CE) return 1;
     writeCon("\nEntropy Checker Extention:\n-------------------------------\n");
-
     CE(buff, bytesRead);
-
     }
     
     // capstone
@@ -1950,29 +1984,23 @@ BOOL Extensions(char* dllName) {
 HANDLE hMod = LoadLibraryA(dllName);
 if (!hMod) return FALSE;
 printf("Extension loaded...\n");
-
+fillPack(dllName);
 return TRUE;
 } 
 
+// Getting the resource Directory with an extention
 int getRsrc(char* fileName) {
-
     typedef int (__stdcall RsrcWalk)(char* fileName);
-
     void* mem = LoadLibrary("rsrcWalk.dll");
-
     if (!mem) {
         writeCon("\nPlace rsrcWalk.dll into the working directory...\n");
         return 0;
     }
-
     RsrcWalk* walker = (RsrcWalk*)GetProcAddress(mem, "getRsrc");
-
     if (!walker) return 0;
-
     walker(fileName);
-
+    fillPack("rsrc Walker");
     return 0;
-
 }
 // Get processes by name and return its ID 
 DWORD threadid; // Global
@@ -2416,6 +2444,7 @@ BOOL getTEBExtention(HANDLE hProcess, HANDLE thread) {
         return TRUE;
     }
 
+    fillPack("Teb Ext");
     pGetTeb getTeb = (pGetTeb)GetProcAddress(hMod, "getTEB");
 
     if (!getTeb) return 0;
@@ -3201,6 +3230,10 @@ lastDisasm* lastFunction = NULL;
 char *breakBuff;
 BOOL clipSniper = 0;
 BOOL clipRan = 0;
+
+#pragma comment(linker, "/alternatename:patch=patchFallback")
+extern void* patch();
+int patchFallback() { return 1; }; // Return 1 if fallback is called, means pebPatch.obj was not linked
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -3311,6 +3344,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                     printf("RDX: 0x%016llX\n", context.Rdx);
                                     printf("R8:  0x%016llX\n", context.R8);
                                     printf("R9:  0x%016llX\n", context.R9);
+                                    continue;
                                 }
                             
                                 else if (mystrcmp(buff, "!attr") == 0) {
@@ -3334,12 +3368,13 @@ BOOL WINAPI debug(LPCVOID param) {
                                 printf("\x1b[92m[+]\x1b[0m Object Attributes: %i\n", objInfo.Attributes); 
                                 printf("\x1b[92m[+]\x1b[0m Granted Access: %08X\n", objInfo.GrantedAccess);
                                 printf("\x1b[92m[+]\x1b[0m Handle count: %lu\n", objInfo.HandleCount); 
-                                FreeLibrary(hNtDll);     
+                                continue;  
                                 } 
 
                                 else if (mystrcmp(buff,"!peb") == 0) {
                                     printf("\x1b[92m[+]\x1b[0m peb already retrieved\n");
                                     printf("\x1b[92m[+]\x1b[0m Peb address: 0x%p\n", peb.pebaddr);
+                                    continue;
                                 }
 
                                 else if (mystrcmp(buff, "exit") == 0) {
@@ -3363,85 +3398,78 @@ BOOL WINAPI debug(LPCVOID param) {
                                     }
                                     printf("\x1b[92m[+]\x1b[0m Peb address: 0x%p\n", peb.pebaddr);
                                     wprintf(L"\x1b[92m[+]\x1b[0m Path: %ls\n", imagePath);
+                                    continue;
                                 }
 
                                 else if (mystrcmp(buff, "clear") == 0) {
-                                    printf("\x1B[2J");                             
+                                    printf("\x1B[2J"); 
+                                    continue;                            
                                    }
 /////////-HELP-/////////
                                 else if (mystrcmp(buff, "help") == 0) {
-
                                     printHelp();
-
+                                    continue;
                                 }
 
                                 else if (mystrcmp(buff, "!proc") == 0) {
                                     printf("\x1b[92m[+]\x1b[0m Listing system wide process information:\n");
                                     listProcesses();
+                                    continue;
                                 }
 
                                 // bit stuff
                                 else if (mystrcmp(buff, "!bit") == 0) {
-                                        printf("\x1b[92m[+]\x1b[0m Is Protected Process?: %lu\n", pbi.IsProtectedProcess);
-                                        printf("\x1b[92m[+]\x1b[0m Is PPL?: %lu\n", pbi.IsProtectedProcessLight);
-                                        printf("\x1b[92m[+]\x1b[0m Uses Large Pages?: %lu\n", pbi.ImageUsesLargePages);
-                                        printf("\x1b[92m[+]\x1b[0m IsImageDynamicallyRelocated?: %lu\n", pbi.IsImageDynamicallyRelocated);
-
+                                    printf("\x1b[92m[+]\x1b[0m Is Protected Process?: %lu\n", pbi.IsProtectedProcess);
+                                    printf("\x1b[92m[+]\x1b[0m Is PPL?: %lu\n", pbi.IsProtectedProcessLight);
+                                    printf("\x1b[92m[+]\x1b[0m Uses Large Pages?: %lu\n", pbi.ImageUsesLargePages);
+                                    printf("\x1b[92m[+]\x1b[0m IsImageDynamicallyRelocated?: %lu\n", pbi.IsImageDynamicallyRelocated);
+                                    continue;
                                 } 
                                 
                                 // Check for VEH in remote process
                                 else if (mystrcmp(buff, "!veh") == 0) {
                                     printf("\x1b[92m[+]\x1b[0m VEH: %lu\n", (DWORD)pbi.ProcessUsingVEH);
+                                    continue;
                                 }
 
                                 // Check memory protections
                                 else if (mystrcmp(buff, "!mbi") == 0) {
-
                                     printf("\x1b[92m[-]\x1b[0m Which addr to get?\n");
-
                                     allocStdin(AllocatedRegion, offsetHandles + 800, stdin);
-
                                     char* breakBuffer = readAlloc(AllocatedRegion, offsetHandles + 800);
-
                                     // getMBI, region checker
                                     breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
                                     if (!getMBI(hProcess, breakBuffer)) {
                                         printf("error");
                                     }
-
-                                    //free(breakBuffer);
+                                    continue;
                                 }
 
-                                   else if (mystrcmp(buff, "!break") == 0) {
-                                                                    
-                                    printf("\x1b[92m[-]\x1b[0m Which address to break at?\n");
-                                   
+                                else if (mystrcmp(buff, "!break") == 0) {                             
+                                    printf("\x1b[92m[-]\x1b[0m Which address to break at?\n"); 
                                     offsetHardwareBreak = allocStdin(AllocatedRegion, offsetHandles + 300, stdin);
-
                                     char* breakBuffer = readAlloc(AllocatedRegion, offsetHandles + 300);
-
                                     breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
-
                                     DWORD64 address = strtoull(breakBuffer, NULL, 0);
-
                                     if (!breakpoint( pi.dwThreadId , address, hProcess)) {
                                         printf("failed to set breakpoint, protected memory region.\n");
                                     }
-
-                                    //free(breakBuffer);
+                                    continue;
                                 }
                                 
                                 // Get current register state dump
                                  else if (mystrcmp(buff, "!getreg") == 0) {
-                                            if (!getThreads(threadId)) {
+                                        if (!getThreads(threadId)) {
                                             printf("error getting threads\n");
-                                            }
+                                        }
+                                        continue;
                                     }
                                 // CPU info
                                     else if (mystrcmp(buff, "!cpu") == 0) {
                                         if (!Getcpuinfo()) {
                                             printf("error %lu", GetLastError());
                                         }
+                                        continue;
                                     }
                                 // Dump raw bytes by address
                                     else if (mystrcmp(buff, "!dump") == 0) {
@@ -3474,6 +3502,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         printf("Error invalid address\n");
                                         }
                                         
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!cc") == 0) {
@@ -3495,6 +3524,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         printf("Error setting the breakpoint at %s\n", breakBuffer);
                                        }
 
+                                       continue;
                                     }
 
                                     else if (mystrcmp(buff, "!ccraw") == 0) {
@@ -3522,6 +3552,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             printf("Wrote a breakpoint at %s\n", breakBuffer);
                                         }
 
+                                        continue;
                                     }
 
                                     // Get section data 
@@ -3529,6 +3560,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         if (!getVariables(pi.dwProcessId)) {
                                             printf("Error enumerating sections\n");
                                             }
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "kill") == 0) {
@@ -3540,25 +3572,22 @@ BOOL WINAPI debug(LPCVOID param) {
                                        } else {
                                         printf("NTSTATUS: 0x%08X - Error killing\n", status);
                                        }   
+                                       continue;
                                     }
 
                                     // Run a DLL (Local)
-                                    else if (mystrcmp(buff, "!ext") == 0) {
-                                    
+                                    else if (mystrcmp(buff, "!ext") == 0) {     
                                     printf("\x1b[92m[-]\x1b[0m Which Extension to Load? (Path to dll)\n");
-                                   
                                     allocStdin(AllocatedRegion, offsetHandles + 400, stdin);
-
                                     char* breakBuffer = readAlloc(AllocatedRegion, offsetHandles + 400);
-
                                     breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
-
                                     Extensions(breakBuffer);
-
+                                    continue;
                                     }
                                     // Get info from kuser
                                     else if (mystrcmp(buff, "!gsi") == 0) {
                                         getSystemInfo();
+                                        continue;
                                     }
                                     // get remote imports
                                     else if (mystrcmp(buff, "!imports") == 0) {
@@ -3567,81 +3596,79 @@ BOOL WINAPI debug(LPCVOID param) {
                                             printf("%s - %llX\n", imports[i].name, imports[i].address);
                                         }
                                         writeCon("END\n");
+                                        continue;
                                     }
                                     // get signature of the file
                                     else if (mystrcmp(buff, "!sig") == 0) {
                                         //wprintf(L"%ws", imagePath);
                                         getSignature(imagePath);
+                                        continue;
                                     }
                                     // cfg check
                                     else if (mystrcmp(buff, "!cfg") == 0) {
                                         cfgCheck(imagePath);
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!pwr") == 0) {
                                         getCpuPower();
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!Inject") == 0) {
-                                            STARTUPINFO siI = { sizeof(si) };
-                                            PROCESS_INFORMATION piI = { 0 };
+                                        STARTUPINFO siI = { sizeof(si) };
+                                        PROCESS_INFORMATION piI = { 0 };
                                         if (!CreateProcessA("DebuggerInjector.exe", NULL, NULL, NULL, 0, CREATE_NEW_CONSOLE, NULL, NULL, &siI, &piI)) {
                                             printf("Error starting up the Injector make sure its in the debuggers directory\n");
+                                            continue;
                                         }
+                                        fillPack("Injector");
+                                        continue;
                                     }
 
-                                    else if (mystrcmp(buff, "!wor") == 0) {
-                                            
+                                    else if (mystrcmp(buff, "!wor") == 0) {                                            
                                         STARTUPINFO siO = { sizeof(si) };
                                         PROCESS_INFORMATION piO = { 0 };
                                     
-                                    
-                                        writeCon("\x1b[92m[-]\x1b[0m Which path to Load? (Object Directory Ex: \\Device)\n");
-                                   
+                                        writeCon("\x1b[92m[-]\x1b[0m Which path to Load? (Object Directory Ex: \\Device)\n"); 
                                         allocStdin(AllocatedRegion, offsetHandles + 500, stdin);
-
-                                        char* breakBuffer = readAlloc(AllocatedRegion, offsetHandles + 500);
-                                        
+                                        char* breakBuffer = readAlloc(AllocatedRegion, offsetHandles + 500); 
                                         char finalbuff[100];
-
                                         snprintf(finalbuff, 99, "cmd.exe /k wor.exe %s & pause", breakBuffer);
-
                                         breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
                                         if (!CreateProcessA(NULL, finalbuff, NULL, NULL, 0, CREATE_NEW_CONSOLE, NULL, NULL, &siO, &piO)) {
                                             writeCon("Make sure wor.exe is inside of the current Directory, use docs to get it.\n");
+                                            continue;
                                         }
+
+                                        fillPack("Walker Object Ranger");
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!handles") == 0) {
-                                    
                                         printf("\x1b[92m[-]\x1b[0m Proccess Number? - Enter for current process\n");
-                                   
                                         offsetHandles = allocStdin(AllocatedRegion, 0, stdin);
-
                                         BYTE* breakBuffer = readAlloc(AllocatedRegion, 0);
-
                                         breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
-
                                         ULONG_PTR value = strtoul(breakBuffer, NULL, 0);
-
                                         DWORD temp;
                                         if (value == 0) {
                                             temp = pi.dwProcessId;
                                         } else {
                                             temp = value;
                                         }
-
                                         dumpHandle(temp, NULL);
-
-                                        //free(breakBuffer);
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "docs") == 0) {
                                         docs();
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!entry") == 0) {
                                         getRemoteImports(hProcess, NULL, 1, 0);
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "start clip") == 0) {
@@ -3650,6 +3677,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         } else {
                                             writeCon("Its already started up...\n");
                                         }   
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!dllcheck") == 0) {
@@ -3669,10 +3697,13 @@ BOOL WINAPI debug(LPCVOID param) {
                                         if (targetAddress) {
                                             getRemoteImports(hProcess, NULL, 0, targetAddress);
                                         }
+
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!vehtable") == 0) {
                                         getVehTable(hProcess, 100);
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!write") == 0) {
@@ -3703,6 +3734,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         }
 
                                         writeMem(hProcess, targetAddress, bytes2Write, byteCount);
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!dll") == 0) {
@@ -3725,16 +3757,19 @@ BOOL WINAPI debug(LPCVOID param) {
                                             intbuff[strcspn(intbuff, "\n")] = '\0';
                                         
                                             staticDisasm(buff, intbuff);
+                                            continue;
                                     }
 
                                     else if (mystrcmp(buff, "!vendor") == 0) {
                                             getCPUVendor();
+                                            continue;
                                     }
 
                                     else if (mystrcmp(buff, "!teb") == 0) {
                                         // Open a thread handle for ATTACH but universal with START
                                         HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, threadId);
                                         getTEBExtention(hProcess, hThread); // Dumping remote TEB
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!hooked") == 0) {
@@ -3743,6 +3778,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         printf("%s ", hooked[i].name);
                                         printf("Function Address: 0x%p]\n", hooked[i].address);
                                         }
+                                        continue;
                                     }
 
                                     else if (mystrcmp(buff, "!func") == 0) {
@@ -3762,6 +3798,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                              
                                             printf("<%lu>: Begin: 0x%p\tEnd: 0x%p - Size: %lu\tType: %02X\n", functions[i].num, (void*)functions[i].begin, (void*)functions[i].end, functions[i].size, functions[i].type);   
                                         }
+                                    continue;
                                     }
 
                                     else if (mystrcmp(buff, "!disasm") == 0) {
@@ -3823,10 +3860,12 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                         else if (mystrcmp(buff, "!save") == 0) {
                                             Save();
+                                            continue;
                                         }
 
                                         else if (mystrcmp(buff, "!net") == 0) {
                                             checkFordotNet(hProcess);
+                                            continue;
                                         }
 
                                         else if (mystrcmp(buff, "!sub") == 0) {
@@ -3847,6 +3886,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             void* new = addressMath(addr, 50);
 
                                             readRawAddr(hProcess, new, 50, 0);
+                                            continue;
 
                                         }
 
@@ -3872,7 +3912,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         } else {
                                             printf("PE built [pePhile.exe]\n");
                                         }
-
+                                        continue;
                                         }
 
                                         else if (mystrcmp(buff, "!dllexp") == 0) {
@@ -3902,6 +3942,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             // for (int j=0; j < exportcount; j++) {
                                             //     printf("%s\n", export[j].name);
                                             // }
+                                            continue;
 
                                         }
 
@@ -3921,7 +3962,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             snprintf(finalbuff, sizeof(finalbuff), "wsl %s\n", buff);
                                             system(finalbuff);
                                             }
-
+                                            continue;
                                         }
 
                                         else if (mystrcmp(buff, ":cmd") == 0) {
@@ -3940,7 +3981,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             system(buff);
                                             }
-
+                                            continue;
                                         }
 
                                         else if (strncmp(buff, "0x", 2) == 0) {
@@ -3961,17 +4002,19 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             printf("\033[31m[+]\033[0m DUMP at 0x%p:\n", address);
                                             readRawAddr(hProcess, address, 20, 0);
-                                            
+                                            continue;
                                         }
 
                                         // Check open TCP connections
                                         else if (mystrcmp(buff, "!tcp") == 0) {
                                             checkTcp( pi.dwProcessId);
+                                            continue;
                                         }
 
                                         // Shows extra handle info
                                         else if (mystrcmp(buff, "!handlesEx") == 0) {
                                             dumpHandle(pi.dwProcessId, hProcess);
+                                            continue;
                                         }
 
                                         // else if (mystrcmp(buff, "!convert") == 0) {
@@ -3981,13 +4024,34 @@ BOOL WINAPI debug(LPCVOID param) {
                                         //     convertEndian(buff);
                                         // }
                                         
-                                        else if (mystrcmp(buff, "!rsrs") == 0) {
+                                        else if (mystrcmp(buff, "!rsrc") == 0) {
                                             writeCon("Path to file?\n");
                                             char rsrcBuff[256];
                                             fgets(rsrcBuff, sizeof(rsrcBuff), stdin);
                                             rsrcBuff[strcspn(rsrcBuff, "\n")] = '\0';
                                             getRsrc(rsrcBuff);
+                                            continue;
                                         }
+
+                                        // For me it wont work without the right header
+                                        else if (mystrcmp(buff, "!patchPeb") == 0) {
+                                            // Patched our PEB
+                                            if (patch() == 1) { printf("Please compile with patchPeb.obj\n"); } else { printf("Patched our PEB\n");}
+                                        }
+
+                                        else if (mystrcmp(buff, "!packs") == 0) {
+                                            int packsActive = 0;
+                                            for (int i=0; i < 8; i++) {
+                                                if (((unsigned char*)packs)[i * 29] == 0) continue;
+                                                printf("Pack #%lu:\t%s\tActive\n", i, ((char*)packs) + (i*29 + 4));                                                           
+                                                packsActive = 1;                                            
+                                            }                                            
+                                            if (packsActive != 1) {
+                                                printf("No Active Packs...\n");
+                                            } 
+                                            continue;
+                                        }
+
                                         else {
                                             writeCon("Wrong command\n");
                                         }
@@ -4022,6 +4086,7 @@ int setPriv() {
     AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
 
     if (GetLastError() == ERROR_SUCCESS) {
+    fillPack("God Mode - SE Debug");
     printf("Running in god mode %lu\n", GetLastError());
     }
 
@@ -4030,6 +4095,13 @@ int setPriv() {
 }
 
 int wmain(int argc, wchar_t* argv[]) {
+
+    unsigned char mem[232]; // 29 * 8
+    packs = (EnabledPacks*)mem;
+    for (int i=0; i < 8; i++) { // 8 * 4 = 32
+        ((unsigned char*)packs)[i * 29] = 0;
+        ((unsigned char*)packs)[i * 29 + 4] = 0;
+    }
 
     if (!IsDebuggerPresent) {
         writeCon("No debugging the debugger\n");
