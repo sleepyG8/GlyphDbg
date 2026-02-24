@@ -32,6 +32,7 @@ CONTEXT context;
 typedef struct {
     int isActive;
     char name[25];
+    void* hMod;
 } packEntry;
 
 typedef struct {
@@ -39,22 +40,51 @@ typedef struct {
 } EnabledPacks;
 EnabledPacks* packs;
 
-int fillPack(char* name) {
+int fillPack(char* name, int Remove, void* hMod) {
     if (strlen(name) > 25) {
         printf("Name must be 25 characters max\n");
         return 1;
     }
+
     for (int i=0; i < 8; i++) {
-        if (strcmp(((char*)packs) + (i*29 + 4), name) == 0) return 2;   // Name check
-        if (((unsigned char*)packs)[i * 29] == 0) {                     // Empty entry find
-            ((unsigned char*)packs)[i * 29] = 1;
-            for (int j=0; j < strlen(name); j++) {
-                ((unsigned char*)packs)[i*29+4+j] = (unsigned char*)name[j];
+        void* newAddr;
+        if (Remove == 1) {
+            if (strcmp(name,  ((char*)packs) + (i*40 + 4)) != 0) continue;
+            memcpy(&newAddr, &((unsigned char*)packs)[i*40 + 32], sizeof(void*));
+            if (!newAddr) continue;
+        }
+
+        if (strcmp(((char*)packs) + (i*40 + 4), name) == 0 && Remove == 0) return 2;   // Name check
+        if (Remove == 1 && newAddr) {
+            if (FreeLibrary((void*)newAddr)) {
+                printf("Unloaded dll\n");
+                // Setting flag to 0
+                ((unsigned char*)packs)[i * 40] = 0;
+            } else {
+                printf("Cant unload dll\n");
             }
+            return 4;
+        }  
+        
+        if (((unsigned char*)packs)[i * 40] == 0) {                     // Empty entry find
+            ((unsigned char*)packs)[i * 40] = 1;
+
+            // copy hMod
+            memcpy(&((unsigned char*)packs)[i*40 + 32], &hMod, sizeof(void*));
+
+            // copy name
+            for (int j=0; j < strlen(name); j++) {
+                ((unsigned char*)packs)[i*40+4+j] = (unsigned char*)name[j];
+            }
+
             return 0;
         } 
     }
+
+    // If full return 3 8 max
+    return 3;
 }
+
 
 struct mystructs {
 
@@ -1261,7 +1291,7 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) 
     //Entropy Check
     HANDLE hEdll = LoadLibrary("entropyCheck.dll");
     if (hEdll) {
-    fillPack("EntropyCheck");
+    fillPack("EntropyCheck", 0, hEdll);
     pCheckEntropy CE = (pCheckEntropy)GetProcAddress(hEdll, "CheckEntropy");
     if (!CE) return 1;
     writeCon("\nEntropy Checker Extention:\n-------------------------------\n");
@@ -1359,7 +1389,7 @@ BOOL logo() {
         writeCon("\x1B[2J");
     
         writeCon("\x1B[2;20H");
-        writeCon("\x1B[37;44m");
+        writeCon("\x1B[40;44m");
         writeCon("Debugger By Sleepy:\n                            v1.1.1\n");
     
         writeCon("\x1B[4;1H");
@@ -1984,7 +2014,7 @@ BOOL Extensions(char* dllName) {
 HANDLE hMod = LoadLibraryA(dllName);
 if (!hMod) return FALSE;
 printf("Extension loaded...\n");
-fillPack(dllName);
+fillPack(dllName, 0, hMod);
 return TRUE;
 } 
 
@@ -1999,7 +2029,7 @@ int getRsrc(char* fileName) {
     RsrcWalk* walker = (RsrcWalk*)GetProcAddress(mem, "getRsrc");
     if (!walker) return 0;
     walker(fileName);
-    fillPack("rsrc Walker");
+    fillPack("rsrc Walker", 0, mem);
     return 0;
 }
 // Get processes by name and return its ID 
@@ -2444,7 +2474,7 @@ BOOL getTEBExtention(HANDLE hProcess, HANDLE thread) {
         return TRUE;
     }
 
-    fillPack("Teb Ext");
+    fillPack("Teb Ext", 0, hMod);
     pGetTeb getTeb = (pGetTeb)GetProcAddress(hMod, "getTEB");
 
     if (!getTeb) return 0;
@@ -3486,7 +3516,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         ULONGLONG addr = 0;
                                         if (sscanf(breakBuffer, "%llx", &addr) != 1 || addr == 0) {
                                         printf("Error: invalid address '%s'\n", breakBuffer);
-                                        return FALSE;
+                                        continue;
                                         }
 
                                         char bytes2Read[100];
@@ -3622,7 +3652,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             printf("Error starting up the Injector make sure its in the debuggers directory\n");
                                             continue;
                                         }
-                                        fillPack("Injector");
+                                        fillPack("Injector", 0, 0);
                                         continue;
                                     }
 
@@ -3641,7 +3671,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             continue;
                                         }
 
-                                        fillPack("Walker Object Ranger");
+                                        fillPack("Walker Object Ranger", 0, 0);
                                         continue;
                                     }
 
@@ -3673,6 +3703,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                     else if (mystrcmp(buff, "start clip") == 0) {
                                         if (clipRan == 0) {
+                                            fillPack("Clip", 0, 0);
                                             clipSniper = 1;
                                         } else {
                                             writeCon("Its already started up...\n");
@@ -4042,13 +4073,34 @@ BOOL WINAPI debug(LPCVOID param) {
                                         else if (mystrcmp(buff, "!packs") == 0) {
                                             int packsActive = 0;
                                             for (int i=0; i < 8; i++) {
-                                                if (((unsigned char*)packs)[i * 29] == 0) continue;
-                                                printf("Pack #%lu:\t%s\tActive\n", i, ((char*)packs) + (i*29 + 4));                                                           
+                                                void* hMod;
+                                                memcpy(&hMod, &((unsigned char*)packs)[i*40 + 32], sizeof(void*));
+                                                if (((unsigned char*)packs)[i * 40] == 0) continue;
+                                                if (!hMod) {
+                                                printf("Pack #%lu:\t%s\tActive\tEXE\n", i, ((char*)packs) + (i*40 + 4));  
+                                                } else {
+                                                printf("Pack #%lu:\t%s\tActive\thMod:%p\n", i, ((char*)packs) + (i*40 + 4), hMod);                                                           
+                                                }
                                                 packsActive = 1;                                            
                                             }                                            
                                             if (packsActive != 1) {
                                                 printf("No Active Packs...\n");
                                             } 
+                                            continue;
+                                        }
+
+                                        else if (mystrcmp(buff, "!unload") == 0) {
+                                            char packName[25];
+                                            printf("Which extention to unload?\n");
+                                            fgets(&packName, sizeof(packName), stdin);
+                                            packName[strcspn(packName, "\n")] = '\0';
+
+                                            for (int i=0; i < 8; i++) {
+                                                if (((unsigned char*)packs)[i * 40 + 32]) continue;
+                                                if (((unsigned char*)packs)[i * 40] == 0) continue;
+                                                int res = fillPack(packName, 1, 0);                                          
+                                            }                                            
+  
                                             continue;
                                         }
 
@@ -4086,7 +4138,7 @@ int setPriv() {
     AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
 
     if (GetLastError() == ERROR_SUCCESS) {
-    fillPack("God Mode - SE Debug");
+    fillPack("God Mode - SE Debug", 0, 0);
     printf("Running in god mode %lu\n", GetLastError());
     }
 
@@ -4096,11 +4148,12 @@ int setPriv() {
 
 int wmain(int argc, wchar_t* argv[]) {
 
-    unsigned char mem[232]; // 29 * 8
+    unsigned char mem[320]; // 29 * 8
     packs = (EnabledPacks*)mem;
     for (int i=0; i < 8; i++) { // 8 * 4 = 32
-        ((unsigned char*)packs)[i * 29] = 0;
-        ((unsigned char*)packs)[i * 29 + 4] = 0;
+        ((unsigned char*)packs)[i * 40] = 0;
+        ((unsigned char*)packs)[i * 40 + 4] = 0;
+        ((unsigned char*)packs)[i * 40 + 29] = 00000000;
     }
 
     if (!IsDebuggerPresent) {
