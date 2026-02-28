@@ -40,6 +40,9 @@ typedef struct {
 } EnabledPacks;
 EnabledPacks* packs;
 
+BOOL clipSniper = 0;
+BOOL clipRan = 0;
+HANDLE clipHandle;
 int fillPack(char* name, int Remove, void* hMod) {
     if (strlen(name) > 25) {
         printf("Name must be 25 characters max\n");
@@ -52,6 +55,18 @@ int fillPack(char* name, int Remove, void* hMod) {
             if (strcmp(name,  ((char*)packs) + (i*40 + 4)) != 0) continue;
             memcpy(&newAddr, &((unsigned char*)packs)[i*40 + 32], sizeof(void*));
             if (!newAddr) continue;
+
+            if (strcmp(name, "Clip") == 0) {
+                if (!TerminateThread(clipHandle, 0)) {
+                    printf("Error killing thread %lu\n", GetLastError());
+                } else {
+                    printf("Killed thread\n", GetLastError());
+                }
+                clipSniper = 0;
+                clipRan = 0;
+                ((unsigned char*)packs)[i * 40] = 0;
+                return 0;
+            }
         }
 
         if (strcmp(((char*)packs) + (i*40 + 4), name) == 0 && Remove == 0) return 2;   // Name check
@@ -598,15 +613,24 @@ function* functions;    // each function has its own struct and opstr embeded st
 typedef struct {
 void* start;
 void* end;
+char name[32];
 } CodeRegion;
 
+typedef struct {
 CodeRegion* codeBounds;
+} Regions;
+
+Regions* codeRegions;
+
 int numOfFunction = 0;
 // Capstone disasm
 BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int funcNum, int tillRET) {
     csh handle;
     cs_insn *insn;
     size_t count;           // opstr count from capstone
+
+    // First struct entry is the .text just like PE basically codeBounds[0].start
+    if (address < codeRegions->codeBounds->start|| address > codeRegions->codeBounds->end) return 0;
 
     numOfFunction = 0;
 
@@ -618,7 +642,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
 
     // Disassemble
     count = cs_disasm(handle, code, size, address, 0, &insn);
-    //functions[funcNum].op = malloc(count * sizeof(opstr));                              // for each function malloc each opstr count
+
     if (count > 0) {
 
         int numofInstructions = 0;
@@ -1258,12 +1282,14 @@ return 0;
 // Reading Raw address and parsing the data
 BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) {
 
-    BYTE *buff = (BYTE*)malloc(bytesToRead);
+    if (bytesToRead > 0x1000) return 0;
+    
+    BYTE buff[0x1000];
     if (!buff) return FALSE;
 
     // Read memory
     DWORD bytesRead = 0;
-    if (ReadProcessMemory(hProcess, base, buff, bytesToRead, &bytesRead)) {
+    if (ReadProcessMemory(hProcess, base, &buff, bytesToRead, &bytesRead)) {
         printf("\x1b[92m[!]\x1b[0m Read Memory - Base: %p\n", base);
     } else {
         printf("\x1b[92m[!]\x1b[0m Read partial memory - Region base: %p\n", base);
@@ -1928,7 +1954,7 @@ if (status == STATUS_ACCESS_VIOLATION) {
 }
 
 // Get section info of a remote process
-BOOL getVariables(DWORD procId) {
+BOOL getVariables(DWORD procId, int startUp) {
 
 HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, procId);
 if (!hProcess) {
@@ -1936,21 +1962,21 @@ if (!hProcess) {
     return FALSE;
 }
 
+if (startUp != 1) {
 printf("base: %p\n", peb.Base);
+}
 
 //reading dos header
 IMAGE_DOS_HEADER dh;
 if (!ReadProcessMemory(hProcess, peb.Base, &dh, sizeof(IMAGE_DOS_HEADER), NULL)) {
     printf("error reading memory of process ID\n");
-   return FALSE;
+    return FALSE;
 }
 
 //checks for a valid PE file
 if (dh.e_magic != IMAGE_DOS_SIGNATURE) {
     printf("error 3 %lu\n", GetLastError());
     return FALSE;
-} else {
-    printf("\x1b[92m[+]\x1b[0m Valid PE file: YES-%x\n", dh.e_magic);
 }
 
 //getting nt headers
@@ -1964,6 +1990,11 @@ if (!ReadProcessMemory(hProcess, (BYTE*)peb.Base + dh.e_lfanew, &nt, sizeof(IMAG
 DWORD sectionOffset = dh.e_lfanew + sizeof(IMAGE_NT_HEADERS);
 IMAGE_SECTION_HEADER section;
 
+if (startUp == 1) {
+    codeRegions = malloc(sizeof(Regions));
+    codeRegions->codeBounds = malloc(10 * sizeof(CodeRegion));
+}
+
 //looping through
 for (int i=0; i < nt.FileHeader.NumberOfSections; i++) {
  
@@ -1971,38 +2002,46 @@ if (!ReadProcessMemory(hProcess, (BYTE*)peb.Base + sectionOffset + (i * sizeof(I
     printf("Error reading section memory %lu", GetLastError());
     }
 
-    printf("\x1b[92m[+]\x1b[0m %s\n", (char*)section.Name);
-
     BYTE* address = (BYTE*)peb.Base + section.VirtualAddress;
+    if (startUp != 1) {
     printf("\x1b[92m[+]\x1b[0m Section: %s | Address: 0x%p | Size: %d\n", section.Name, (void*)address, section.SizeOfRawData);
-
-    if (mystrcmp(section.Name, ".text") == 0) {
-        codeBounds = malloc(sizeof(CodeRegion));
-        codeBounds->start = address;
-        void* end = (unsigned char*)address + section.Misc.VirtualSize;
-        codeBounds->end = end;
+    printf("\x1b[92m[+]\x1b[0m %s\n", (char*)section.Name);
     }
 
-    char buffer[0x1000];
+
+    if (startUp == 1) {
+        // Just in case of overflow no more than 10
+        if (i < 10) {
+        codeRegions->codeBounds[i].start = address;
+        void* end = (unsigned char*)address + section.Misc.VirtualSize;
+        codeRegions->codeBounds[i].end = end;
+        strcpy(codeRegions->codeBounds[i].name, section.Name);
+        printf("Section:\t%s[%lu]\t0x%p-0x%p\n", codeRegions->codeBounds[i].name, section.Misc.VirtualSize, codeRegions->codeBounds[i].start, end);
+        }
+
+    }
+
+    char buffer[1000];
     if (!ReadProcessMemory(hProcess, (BYTE*)peb.Base + section.VirtualAddress, &buffer, sizeof(buffer), NULL)) {
         printf("Error reading data %lu\n", GetLastError());
     } else {
-            for (int i = 0; i < sizeof(buffer); i++) {
-            if (isprint(buffer[i])) {  // Very useful to print only valid chars
-        printf("%c ", buffer[i]);
+    for (int i = 0; i < sizeof(buffer); i++) {
+    if (startUp != 1 && isprint(buffer[i])) {  // Very useful to print only valid chars
+    printf("%c ", buffer[i]);
     }
     }
-    printf("\n");
+    
+    if (startUp != 1) printf("\n");
 
     // Mining
     if (section.Misc.VirtualSize > section.SizeOfRawData) {
     DWORD codeCaveSize = section.Misc.VirtualSize - section.SizeOfRawData;
     DWORD caveEntry = section.PointerToRawData + section.SizeOfRawData;
 
-    printf("Cave Found: %p - Size: %lu\n", (BYTE*)peb.Base + caveEntry, codeCaveSize);
+    printf("[!]Cave Found: %p - Size: %lu\n", (BYTE*)peb.Base + caveEntry, codeCaveSize);
 
     }
-    printf("++++++++++++++++++++++++++++++++++\n");
+    if (startUp != 1) printf("++++++++++++++++++++++++++++++++++\n");
     }
     
 }
@@ -3258,9 +3297,6 @@ typedef struct lastDisasm {
 lastDisasm* lastFunction = NULL;
 
 char *breakBuff;
-BOOL clipSniper = 0;
-BOOL clipRan = 0;
-
 #pragma comment(linker, "/alternatename:patch=patchFallback")
 extern void* patch();
 int patchFallback() { return 1; }; // Return 1 if fallback is called, means pebPatch.obj was not linked
@@ -3330,6 +3366,8 @@ BOOL WINAPI debug(LPCVOID param) {
             // Getting function boundaries
             getExceptionDir(hProcess, 0);
 
+            getVariables(pi.dwProcessId, 1);
+
             printf("\x1b[92m[+]\x1b[0m Thread address/ID: %lu\n", threadId);
 
             // if -b is found set a breakpoint on that import (breakBuff)
@@ -3344,8 +3382,9 @@ BOOL WINAPI debug(LPCVOID param) {
                     while (1) {   
                             
                             if (clipSniper == 1) {  // Clip sniper
-                             HANDLE hThread = CreateThread(NULL, 0, clipThread, hProcess, NULL, NULL);
-                             if (hThread) {
+                             clipHandle = CreateThread(NULL, 0, clipThread, hProcess, NULL, NULL);
+                             if (clipHandle) {
+                                fillPack("Clip", 0, clipHandle);
                                 writeCon("Clipboard is being sniped for addressess! Anything starting with 0x\n");
                                 clipSniper = 0;
                                 clipRan = 1;
@@ -3587,7 +3626,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                     // Get section data 
                                     else if (mystrcmp(buff, "!var") == 0) {
-                                        if (!getVariables(pi.dwProcessId)) {
+                                        if (!getVariables(pi.dwProcessId, 0)) {
                                             printf("Error enumerating sections\n");
                                             }
                                         continue;
@@ -3703,7 +3742,6 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                     else if (mystrcmp(buff, "start clip") == 0) {
                                         if (clipRan == 0) {
-                                            fillPack("Clip", 0, 0);
                                             clipSniper = 1;
                                         } else {
                                             writeCon("Its already started up...\n");
@@ -3861,7 +3899,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 }
                                             }
 
-                                            printf("i = %lu\n", i);
+                                            //printf("i = %lu\n", i);
                                             printf("<%lu>: Begin: %p\tEnd: %p - Size: %lu\n", functions[i].num, functions[i].begin, functions[i].end, functions[i].size);
 
                                             if (functions[i].firstByte != 0x48 || functions[i].size < 100) continue;            // continue if not x64 code and filter out filler
@@ -4096,7 +4134,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             packName[strcspn(packName, "\n")] = '\0';
 
                                             for (int i=0; i < 8; i++) {
-                                                if (((unsigned char*)packs)[i * 40 + 32]) continue;
+                                                //if (((unsigned char*)packs)[i * 40 + 32]) continue;
                                                 if (((unsigned char*)packs)[i * 40] == 0) continue;
                                                 int res = fillPack(packName, 1, 0);                                          
                                             }                                            
@@ -4166,7 +4204,7 @@ int wmain(int argc, wchar_t* argv[]) {
     LPVOID fiberMain = ConvertThreadToFiber(NULL); 
     LPVOID debugFiber = CreateFiber(0, debug, argv[1]);
 
-    if (argc < 2) {
+    if (argc < 3) {
         writeCon("\033[35mGlyph - Remote debugger engine by Sleepy\033[0m\n");
         logo();
         writeCon("\x1b[92mUsage:\x1b[0m\n-c <Remote process name> ex. Notepad.exe (ATTACH)\n<path to executable> ex. C:\\Windows\\System32\\notepad.exe start(START)\n-c <process> -b (BREAKPOINT)\n");
