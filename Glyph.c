@@ -4460,6 +4460,10 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                         else if (mystrcmp(buff, "!bp") == 0) {  
                                             HANDLE hFile = CreateFileA("break.dll", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                                            if (!hFile) {
+                                                printf("Please place break.dll into working directory...\n");
+                                                continue;
+                                            }
                                             char path[128];
                                             GetFinalPathNameByHandleA(hFile, path, sizeof(path), 0);
 
