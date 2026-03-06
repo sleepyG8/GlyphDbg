@@ -102,12 +102,12 @@ int fillPack(char* name, int Remove, void* hMod) {
 
 
 struct mystructs {
-
 PPEB pebaddr;
 PRTL_USER_PROCESS_PARAMETERS params;
 BYTE BeingDebugged;
-PVOID Base;
-
+void* Base;
+void* heap;
+void* Entry;
 }peb;
 
 struct myparams {
@@ -329,6 +329,7 @@ typedef struct _MYPEB {
     PVOID Reserved7;
     ULONG Reserved8;
     ULONG AtlThunkSListPtr32;
+    PVOID ProcessHeap;
     PVOID Reserved9[45];
     BYTE Reserved10[96];
     PPS_POST_PROCESS_INIT_ROUTINE PostProcessInitRoutine;
@@ -499,14 +500,6 @@ DWORD64 extract_offset_from_operand(const char* op_str) {
     return strtoull(temp, NULL, 0);
     }
 
-// Unused for now, alloc
-BYTE* makeMem(int size) {
-
-    BYTE* remoteMem = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-
-    return remoteMem;
-}
-
 uintptr_t alloc(BYTE* remoteMem, int startingOffset, unsigned char* data) {
 
 
@@ -630,7 +623,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
     size_t count;           // opstr count from capstone
 
     // First struct entry is the .text just like PE basically codeBounds[0].start
-    if (address < codeRegions->codeBounds->start|| address > codeRegions->codeBounds->end) return 0;
+    //if (address < codeRegions->codeBounds->start|| address > codeRegions->codeBounds->end) return 0;
 
     numOfFunction = 0;
 
@@ -998,6 +991,7 @@ if (!ReadProcessMemory(hProcess, (BYTE*)baseAddress + dh.e_lfanew + offsetof(IMA
 
 if (entry == 1) {
 uintptr_t entry = (uintptr_t)baseAddress + oh.AddressOfEntryPoint;
+peb.Entry = entry;
 printf("Entry: %p\n", (void*)entry);
 return 0;
 }
@@ -1126,18 +1120,29 @@ while (TRUE) {
 
 
         BYTE patch[10];
-        memset(patch, 0xCC, sizeof(patch));
+        memset(patch, 0xC3, sizeof(patch));
 
         if (breakFunction != NULL && mystrcmp(importByName->Name, breakFunction) == 0) {
+            
+            typedef void* (__stdcall *pNtSuspendProcess)(void* hProc);
+            typedef void* (__stdcall *pNtResumeProcess)(void* hProc);
+            pNtSuspendProcess suspend = (pNtSuspendProcess)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtSuspendProcess");
+            pNtResumeProcess resume = (pNtSuspendProcess)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtResumeProcess");
+            if (!suspend || !resume) return 0;
+
+            suspend(hProcess);
             if (!WriteProcessMemory(hProcess, funcAddr, &patch, sizeof(patch), NULL)) {
                 printf("error\n");
+                resume(hProcess);
                 return 0;
             } else {
                 printf("\n++++++++++++++++\033[31mBreakPoints\033[0m++++++++++++++++\n");
 
                 printf("\033[31mWrote a breakpoint at 0x%llX on function [%s]\033[0m\n", funcAddr, importByName->Name);
+                resume(hProcess);
                 return 0;
             }
+
         }
 
         }
@@ -1279,6 +1284,188 @@ for (int i=0; i < exportcount; i++) {
 return 0;
 }
 
+//gets mbi info which is useful for checking protections on a mem region
+//also, I built this for me to test regions while building this debugger
+DWORD getMBI(HANDLE hProcess, LPVOID addr, int show) {
+        
+MEMORY_BASIC_INFORMATION mbi;
+DWORD oldProtect;
+    
+MEMORY_INFORMATION_CLASS infoClass = MemoryBasicInformation;
+
+pNtQueryVirtualMemory NtQueryVirtualMemory = (pNtQueryVirtualMemory)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQueryVirtualMemory");
+    
+NTSTATUS status = NtQueryVirtualMemory(hProcess, addr, infoClass, &mbi, sizeof(MEMORY_BASIC_INFORMATION), NULL);
+
+if (show != 0) {
+printf("\x1b[92m[+]\x1b[0m Base address: 0x%p\n", mbi.BaseAddress);
+printf("\x1b[92m[+]\x1b[0m Protections: %lu\n", mbi.Protect);
+printf("\x1b[92m[+]\x1b[0m State: %lu\n", mbi.State);
+printf("\x1b[92m[+]\x1b[0m Partition ID: %lu\n", mbi.PartitionId);
+printf("\x1b[92m[+]\x1b[0m Type: %lu\n", mbi.Type);
+printf("\x1b[92m[+]\x1b[0m Protect alloc: %lu\n", mbi.AllocationProtect);
+}
+return mbi.Protect;
+
+}
+
+// List syscalls
+int listSyscalls(HANDLE hProcess) {
+
+    for (int p=0; ;p++) {
+    unsigned char tmpBase[4096];
+    if (!ReadProcessMemory(hProcess, (unsigned char*)ntdllBase + p*4096, &tmpBase, sizeof(tmpBase), NULL)) {
+        printf("Error reading 0x%p\n", tmpBase);
+    }
+
+    int q=0;    // iteration count
+    for (int i=0; i < sizeof(tmpBase);i++) {
+
+       // printf("%02X ", tmpBase[i]);
+        if (tmpBase[i] == 0x0F && tmpBase[i + 1] == 0x05 && tmpBase[i + 2] == 0xC3) {
+            printf("syscall stub found\n");
+            int num = i - 18;
+            int end = 0;
+            for (int j=0; j < 21; j++) {
+                
+                printf("%02X ", tmpBase[num + j]);
+
+                // E8 is the final syscall
+                if (tmpBase[num+j] == 0xB8 && tmpBase[num+j+1] == 0xE8 && tmpBase[num+j+2] == 0x01) {
+                    end = 1;
+                }
+            }
+
+            //printf("\n<%lu>\n", q);
+
+            if (end == 1) {
+                printf("END\n");
+                return 1;
+            }
+
+            q++;
+            printf("\n++++++++++++++++++++++++\n");
+        } 
+
+    }
+}
+}
+
+// find dlls backup
+int findMZ(HANDLE hProcess) {
+
+    DWORD num = 0;
+    unsigned char* base = 0x00007FF800000000;
+
+    while (base < 0x7FFFFFFFFFFF) {
+    __try {
+        
+    num = getMBI(hProcess, base, 0);
+    
+    unsigned char MZ[10];
+    ReadProcessMemory(hProcess, base, &MZ, sizeof(MZ), NULL);
+
+    if (MZ[0] == 'M' && MZ[1] == 'Z') {
+        printf("MZ found at 0x%p\n", base);
+        getRemoteExports(hProcess, base, "");
+        getchar();
+        
+    }
+
+    } __except(1) {
+    }
+
+    base += 0x1000;
+}
+}
+
+// Finding .text section backup
+int findRX(HANDLE hProcess, unsigned char* base) {
+
+    DWORD num = 0;
+    __try {
+        num = getMBI(hProcess, base, 0);
+    } __except(1) {
+        printf("Done at %p\n", base);
+        return 0;
+    }
+
+    if (num == 1) {
+        printf("No access at %p\n", base);
+        return 0;
+    } else if (num == 64) {
+        printf("Done RWX found\n");
+    } else if (num == 32) {
+        printf(".text at %p\n", base);
+
+        int foundNum = 0;
+        for (int i=0; ; i++) {
+        unsigned char firstBytes[0x1000];
+        if (!ReadProcessMemory(hProcess, base, &firstBytes, sizeof(firstBytes), NULL)) {
+            return 0;
+        }
+
+        int j;
+        int found = 0;
+        for (j=0; j < 0x1000; j++) {
+            if (firstBytes[j] != 0xC3) continue; 
+            if (firstBytes[j+1] != 0xCC) continue;
+            printf("%02X\n", firstBytes[j]);
+            printf("ret found at %p\n", base + j);
+            printf("Function Size: %lu\n", j);
+            readRawAddr(hProcess, base + j, j, 0);
+            base = base + j + 2;
+            found = 1;
+            foundNum++;
+            getchar();
+            break;
+            }
+
+        if (found == 0) {
+            base += 0x1000;
+        }
+    } 
+    printf("%lu\n", foundNum);
+    return 0;    
+}
+
+
+    base += 0x1000;
+    findRX(hProcess, base);
+}
+
+int BreakPoint(void* hProcess, void* address) {
+    DWORD old = 0;
+    if (!VirtualProtectEx(hProcess, address, 16, PAGE_EXECUTE_READWRITE | PAGE_GUARD, &old)) {
+        printf("Failed to change protections %lu\n", GetLastError());
+        return 0;
+    }
+    printf("Breakpoint set at %p\n", address);
+    return 1;
+}
+
+int count = 0;
+int walkHeap(void* hProcess, void* heapAddr) {
+
+    unsigned char buffer[0x1000];
+    if (!ReadProcessMemory(hProcess, heapAddr, &buffer, sizeof(buffer), 0)) return 1;
+
+    for (int i=0; i < 256; i++) {
+        printf("%02X ", buffer[i]);
+    }
+    printf("Num %lu\n", count);
+    count++;
+    printf("\n");
+    heapAddr = (unsigned char*)heapAddr + 0x1000;
+
+    int res = getMBI(hProcess, heapAddr, 1);
+    printf("res: %lu\n", res);
+    if (res != 4) return 0;
+
+    walkHeap(hProcess, heapAddr);
+
+}
+
 // Reading Raw address and parsing the data
 BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) {
 
@@ -1287,6 +1474,12 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) 
     BYTE buff[0x1000];
     if (!buff) return FALSE;
 
+    DWORD memoryInfo = getMBI(hProcess, base, 0);
+    if (memoryInfo == 1) {
+        printf("[!]Cannot read PAGE_NOACCESS\n");
+        return 2;
+    }
+
     // Read memory
     DWORD bytesRead = 0;
     if (ReadProcessMemory(hProcess, base, &buff, bytesToRead, &bytesRead)) {
@@ -1294,6 +1487,7 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) 
     } else {
         printf("\x1b[92m[!]\x1b[0m Read partial memory - Region base: %p\n", base);
     }
+    
     // Print 100 raw memory bytes
     printf("\x1b[92m[+]\x1b[0m Chars:\n");
     for (SIZE_T i = 0; i < bytesRead; i++) {
@@ -1324,6 +1518,22 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) 
     CE(buff, bytesRead);
     }
     
+    if (memoryInfo == 32) {
+    printf("\n\x1b[92m[+]\x1b[0m Memory Protections: [RX]\n");
+    } else if (memoryInfo == 64) {
+    printf("\n\x1b[92m[+]\x1b[0m Memory Protections: \x1b[92m[RWX]\x1b[0m\n");
+    } else if (memoryInfo == 4) {
+    printf("\n\x1b[92m[+]\x1b[0m Memory Protections: [RW]\n");
+    } else if (memoryInfo == 8) {
+    printf("\n\x1b[92m[+]\x1b[0m Memory Protections: [PAGE_WRITECOPY]\n");
+    } else if (memoryInfo == 2) {
+    printf("\n\x1b[92m[+]\x1b[0m Memory Protections: [PAGE_READONLY]\n");
+    } else if (memoryInfo == 16) {
+    printf("\n\x1b[92m[+]\x1b[0m Memory Protections: [PAGE_EXECUTE]\n");
+    } else if (memoryInfo == 128) {
+    printf("\n\x1b[92m[+]\x1b[0m Memory Protections: [PAGE_EXECUTE_WRITECOPY]\n");
+    }
+
     // capstone
     writeCon("\n------\x1b[92m[+]Dissassembly:\x1b[0m------\n");
 
@@ -1528,12 +1738,15 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
         return FALSE;
     }
 
-    printf("\x1b[92m[+]\x1b[0m Peb address: 0x%llX\t", proc.PebBaseAddress);
+    printf("\x1b[92m[+]\x1b[0m Peb address: 0x%p\t", proc.PebBaseAddress);
 
-   // printf("Parameters: %i\n", pbi.ProcessParameters->CommandLine.Length); this is only for terminal apps
-   // printf("Is Protected Process?: %lu\n", pbi.IsProtectedProcess);
-    
-   printf("\x1b[92m[+]\x1b[0m IsBeingDebugged: %i\n", pbi.BeingDebugged);
+    void* heap = (unsigned char*)proc.PebBaseAddress + 0x30;
+    void* realHeap = NULL;
+    ReadProcessMemory(hProcess, heap, &realHeap, sizeof(realHeap), 0);
+
+    peb.heap = realHeap;
+
+    printf("\x1b[92m[+]\x1b[0m IsBeingDebugged: %lu\n", pbi.BeingDebugged);
 
     peb.BeingDebugged = pbi.BeingDebugged; //neat
     peb.params = pbi.ProcessParameters; //storing address
@@ -1573,7 +1786,7 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
             return FALSE;
     }
     
-    printf("\x1b[92m[+]\x1b[0m LDR Address: 0x%llX\n", ldrData);
+    printf("\x1b[92m[+]\x1b[0m LDR Address: 0x%p\n", ldrData);
 
        // printf("\n\033[35m+-----------Modules-----------+\033[0m\n");
      LIST_ENTRY* head = &ldrData.InLoadOrderModuleList;
@@ -1836,35 +2049,6 @@ BOOL Getcpuinfo() {
 
 }
 
-//gets mbi info which is useful for checking protections on a mem region
-//also, I built this for me to test regions while building this debugger
-BOOL getMBI(HANDLE hProcess, LPVOID addr) {
-        MEMORY_BASIC_INFORMATION mbi;
-        DWORD oldProtect;
-   
- 
-MEMORY_INFORMATION_CLASS infoClass = MemoryBasicInformation;
-
-pNtQueryVirtualMemory NtQueryVirtualMemory = (pNtQueryVirtualMemory)GetProcAddress(
-    GetModuleHandle("ntdll.dll"), "NtQueryVirtualMemory"
-);
-    
-  NTSTATUS status = NtQueryVirtualMemory(hProcess, addr, infoClass, &mbi, sizeof(mbi), NULL);
-if (!NT_SUCCESS(status)) {
-    printf("Error with Virtual Memory: %lu\n", GetLastError());
-}
-
-    printf("\x1b[92m[+]\x1b[0m Base address: 0x%p\n", mbi.BaseAddress);
-    printf("\x1b[92m[+]\x1b[0m Protections: %lu\n", mbi.Protect);
-    printf("\x1b[92m[+]\x1b[0m State: %lu\n", mbi.State);
-    printf("\x1b[92m[+]\x1b[0m Partition ID: %lu\n", mbi.PartitionId);
-    printf("\x1b[92m[+]\x1b[0m Type: %lu\n", mbi.Type);
-    printf("\x1b[92m[+]\x1b[0m Protect alloc: %lu\n", mbi.AllocationProtect);
-
-    return TRUE;
-
-}
-
 // hardware breakpoint
 BOOL breakpoint(DWORD threadId, PVOID address, HANDLE hProcess) {
 
@@ -2071,22 +2255,23 @@ int getRsrc(char* fileName) {
     fillPack("rsrc Walker", 0, mem);
     return 0;
 }
+
+typedef struct {
+    void* address;
+    long priority;
+    unsigned long state;
+} Threads;
+Threads* thread;
+
 // Get processes by name and return its ID 
 DWORD threadid; // Global
 DWORD GetProc(wchar_t* procName, DWORD procId) {
 
-    HMODULE hNtDll = GetModuleHandle("ntdll.dll");
-    if (!hNtDll) {
-        printf("Failed to load ntdll.dll\n");
-        return FALSE;
-    }
+    thread = malloc(256 * sizeof(Threads));
 
-    pNtQuerySystemInformation NtQuerySystemInformation =
-        (pNtQuerySystemInformation)GetProcAddress(hNtDll, "NtQuerySystemInformation");
-    if (!NtQuerySystemInformation) {
-        printf("Failed to get NtQueryInformationProcess\n");
-        return FALSE;
-    }
+    HMODULE hNtDll = GetModuleHandle("ntdll.dll");
+
+    pNtQuerySystemInformation NtQuerySystemInformation = (pNtQuerySystemInformation)GetProcAddress(hNtDll, "NtQuerySystemInformation");
 
     ULONG returnLen;
     NTSTATUS status = NtQuerySystemInformation(SystemProcessInformation, NULL, 0, &returnLen);
@@ -2120,7 +2305,16 @@ DWORD GetProc(wchar_t* procName, DWORD procId) {
         // info + 1 walks from process struct to thread struct
         PSYSTEM_THREAD_INFORMATION threads = (PSYSTEM_THREAD_INFORMATION)(info + 1);
 
-        threadid = threads[info->NumberOfThreads - 1].ClientId.UniqueThread;
+        for (int i=0; i < info->NumberOfThreads; i++) {
+        if (i > 256) break;
+        thread[i].address = threads[i].ClientId.UniqueThread;
+        thread[i].priority = threads[i].Priority;
+        thread[i].state = threads[i].ThreadState;
+        }
+
+        thread[info->NumberOfThreads+1].state = 999;        // Delimiter 
+
+        threadid = threads[0].ClientId.UniqueThread;
         printf("%lu\n", info->UniqueProcessId);
         return info->UniqueProcessId;
     }
@@ -2131,6 +2325,15 @@ DWORD GetProc(wchar_t* procName, DWORD procId) {
         ULONG threadCount = info->NumberOfThreads;
         // info + 1 walks from process struct to thread struct
         PSYSTEM_THREAD_INFORMATION threads = (PSYSTEM_THREAD_INFORMATION)(info + 1);
+
+        for (int i=0; i < info->NumberOfThreads; i++) {
+        if (i > 256) break;
+        thread[i].address = threads[i].ClientId.UniqueThread;
+        thread[i].priority = threads[i].Priority;
+        thread[i].state = threads[i].ThreadState;
+        }
+
+        thread[info->NumberOfThreads+1].state = 999;        // Delimiter 
 
         threadid = threads[0].ClientId.UniqueThread;
         //threadid = threads[info->NumberOfThreads - (info->NumberOfThreads - 1)].ClientId.UniqueThread;
@@ -2156,6 +2359,19 @@ DWORD GetProc(wchar_t* procName, DWORD procId) {
    // printf("\x1b[92m[+]\x1b[0m # of processes: %i\n", procCount);
 
     return 0;
+}
+
+#define NOTHREADNUM 999
+int printThreadInfo(int getReg, int threadNum) {
+    for (int i=0; i < 256; i++) {
+        if (thread[i].state == NOTHREADNUM) break;  // Last entry is 999
+        if (threadNum == NOTHREADNUM) printf("[%lu] Thread # %lu\tPriority: %lu\tState: %lu\n", i, (DWORD)thread[i].address, thread[i].priority, thread[i].state);
+        if (i == threadNum) return thread[i].address;
+        if (getReg != 1) continue;
+        getThreads(thread[i].address);
+        writeCon("Press Enter to continue\n");
+        getchar();
+    }
 }
 
 // Getting files signature
@@ -2878,17 +3094,23 @@ BOOL printHelp() {
     
     writeCon("!getreg   - Print registers at current memory location\n");
     
-    writeCon("!break    - Set a breakpoint and read registers\n");
+    // writeCon("!break    - Set a breakpoint and read registers\n");
     
-    writeCon("!cc       - int3 break at a function address\n");
+    // writeCon("!cc       - int3 break at a function address\n");
 
-    writeCon("!ccraw    - Break at a supplied address\n");
+    // writeCon("!ccraw    - Break at a supplied address\n");
+
+    writeCon("!bp       - Set a breakpoint on an address\n");
 
     writeCon("!write    - Write to a Address ex. CC\n");
+
+    writeCon("!swap     - Swap thread by entry #\n");
 
     writeCon("\n-- Memory & Data Inspection --\n");
     
     writeCon("!dump     - Dump a raw address (retry if ERROR_ACCESS_DENIED)\n");
+
+    writeCon("!disasm    - Disassemble the function boundaries\n");
 
     writeCon("!rebuild  - Rebuild memory of an address into a PE (extracting code)\n");
 
@@ -2920,7 +3142,15 @@ BOOL printHelp() {
 
     writeCon("!static   - Disasm a file from Disk\n");
 
+    writeCon("!rsrc     - Get resource data of file on disk\n");
+
     writeCon("!net      - Check for .Net\n");
+
+    writeCon("!mz       - Find dlls(Alt)\n");
+
+    writeCon("!rx       - Disasm(Alt)\n");
+
+    writeCon("!stubs    - Dump syscall stubs\n");
     
     writeCon("!Inject   - Inject an extention Dll - Must have the DebuggerInjector.exe\n");
 
@@ -2944,33 +3174,43 @@ BOOL printHelp() {
     
     writeCon("!pwr      - Check CPU GHz\n");
     
-    writeCon("!handles  - Dump Handles\n");
+    writeCon("!handles & !handlesEx  - Dump Handles\n");
 
     writeCon("!vendor   - Get CPU vendor\n");
 
     writeCon("!dll       - List all loaded modules\n");
 
+    writeCon("!tcp       - Get active tcp connections\n");
+
     writeCon("\n-- General Commands --\n");
     
-    writeCon("clear      - Clear the console screen\n");
+    writeCon("clear       - Clear the console screen\n");
     
-    writeCon("exit       - Terminate debugging session\n");
+    writeCon("exit        - Terminate debugging session\n");
     
-    writeCon("kill       - Close the debugged process\n");
+    writeCon("kill        - Close the debugged process\n");
     
-    writeCon("help       - Display additional commands\n");
+    writeCon("help        - Display additional commands\n");
     
-    writeCon("!ext       - Load extension (DLL)\n");
+    writeCon("!ext        - Load extension (DLL)\n");
 
-    writeCon(":wsl       - Drop into running wsl cmd line\n");
+    writeCon(":wsl        - Drop into running wsl cmd line\n");
 
-    writeCon(":cmd       - Drop into cmd.exe\n");
+    writeCon(":cmd        - Drop into cmd.exe\n");
     
-    writeCon("docs       - Go to documentation online\n");
+    writeCon("docs        - Go to documentation online\n");
 
-    writeCon("!save      - Save debugging session to out.slp\n");
+    writeCon("!save       - Save debugging session to out.slp\n");
 
-    writeCon("start clip - start clip disasm shortcut\n");
+    writeCon("!packs      - List Active Extententions\n");
+
+    writeCon("!unload     - Unload an extention by name");
+
+    writeCon("start clip  - start clip disasm shortcut\n");
+
+    writeCon("0x????????  - Send an address and get info\n");
+
+    writeCon("Extras: [!pebPatch] - patch glyphs peb\n");
 
     writeCon("==============================\n");
 }
@@ -3286,6 +3526,34 @@ BOOL staticDisasm(char* buff, char* intbuff) {
     Disasm(3, args);
 }
 
+int alrInj = 0; // Dont want to reload dll
+typedef int(__stdcall* pbridge)(HANDLE, char*, DWORD);
+pbridge bridge;
+// This does Injection
+// Make this use code cave
+BOOL injectBridge(HANDLE hProcess, char* path) {
+
+if (alrInj == 0) {
+void* hMod = LoadLibrary("bridge.dll");
+if (!hMod) {
+    writeCon("Make sure bridge.dll is in the working directory...\n");
+    return 1;
+}
+
+bridge = (pbridge)GetProcAddress(hMod, "bridge");
+if (!bridge) return 0;
+
+alrInj = 1;
+}
+
+if (!bridge(hProcess, path, threadid)) {   // This is using the primary thread no matter what
+    return 1;
+}
+
+printf("[!]bridge setup\n");
+return 0;
+}
+
 wchar_t* secondParam = NULL; // argv[2]
 wchar_t* dllChoice; // Only for DLLs
 
@@ -3297,6 +3565,7 @@ typedef struct lastDisasm {
 lastDisasm* lastFunction = NULL;
 
 char *breakBuff;
+int breakSet = 0;
 #pragma comment(linker, "/alternatename:patch=patchFallback")
 extern void* patch();
 int patchFallback() { return 1; }; // Return 1 if fallback is called, means pebPatch.obj was not linked
@@ -3372,7 +3641,12 @@ BOOL WINAPI debug(LPCVOID param) {
 
             // if -b is found set a breakpoint on that import (breakBuff)
             if (breakpointSet) {
-                getRemoteImports(hProcess, breakBuff, 0, 0);
+                // inject(hProcess, "C:\\Users\\phawk\\OneDrive\\Desktop\\MyC\\Internals\\vehBreak.dll");
+                // fillPack("Debug Handler", 0, NULL);
+                // breakSet = 1;   
+                // printf("%p\n", peb.Entry);                
+                BreakPoint(hProcess, peb.Base);
+                writeCon("BreakPoint Set...\n");
             }
 
             ////////////////////////////////////////////////////////////////////
@@ -3392,7 +3666,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                             }
                             
-                            printf("\033[35mDebug>>\033[0m");
+                            writeCon("\033[35mDebug>>\033[0m");
 
                             // Custom memory allocator
                             allocStdin(AllocatedRegion, offsetHandles + 200, stdin);
@@ -3506,28 +3780,26 @@ BOOL WINAPI debug(LPCVOID param) {
                                     printf("\x1b[92m[-]\x1b[0m Which addr to get?\n");
                                     allocStdin(AllocatedRegion, offsetHandles + 800, stdin);
                                     char* breakBuffer = readAlloc(AllocatedRegion, offsetHandles + 800);
-                                    // getMBI, region checker
                                     breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
-                                    if (!getMBI(hProcess, breakBuffer)) {
-                                        printf("error");
-                                    }
+                                    getMBI(hProcess, breakBuffer, 1);
                                     continue;
                                 }
 
-                                else if (mystrcmp(buff, "!break") == 0) {                             
-                                    printf("\x1b[92m[-]\x1b[0m Which address to break at?\n"); 
-                                    offsetHardwareBreak = allocStdin(AllocatedRegion, offsetHandles + 300, stdin);
-                                    char* breakBuffer = readAlloc(AllocatedRegion, offsetHandles + 300);
-                                    breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
-                                    DWORD64 address = strtoull(breakBuffer, NULL, 0);
-                                    if (!breakpoint( pi.dwThreadId , address, hProcess)) {
-                                        printf("failed to set breakpoint, protected memory region.\n");
-                                    }
-                                    continue;
-                                }
+                                // else if (mystrcmp(buff, "!break") == 0) {                             
+                                //     printf("\x1b[92m[-]\x1b[0m Which address to break at?\n"); 
+                                //     offsetHardwareBreak = allocStdin(AllocatedRegion, offsetHandles + 300, stdin);
+                                //     char* breakBuffer = readAlloc(AllocatedRegion, offsetHandles + 300);
+                                //     breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
+                                //     DWORD64 address = strtoull(breakBuffer, NULL, 0);
+                                //     if (!breakpoint( pi.dwThreadId , address, hProcess)) {
+                                //         printf("failed to set breakpoint, protected memory region.\n");
+                                //     }
+                                //     continue;
+                                // }
                                 
                                 // Get current register state dump
                                  else if (mystrcmp(buff, "!getreg") == 0) {
+                                        printf("Dumping Thread #%lu\n", threadId);
                                         if (!getThreads(threadId)) {
                                             printf("error getting threads\n");
                                         }
@@ -3574,63 +3846,63 @@ BOOL WINAPI debug(LPCVOID param) {
                                         continue;
                                     }
 
-                                    else if (mystrcmp(buff, "!cc") == 0) {
+                                    // else if (mystrcmp(buff, "!cc") == 0) {
                                         
-                                        char breakBuffer[100] = {0};
-                                        if (!breakBuffer) {
-                                        printf("Memory allocation error\n");
-                                        }
+                                    //     char breakBuffer[100] = {0};
+                                    //     if (!breakBuffer) {
+                                    //     printf("Memory allocation error\n");
+                                    //     }
 
-                                        printf("Which function to break at? (Ex: GetProcAddress)\n");
+                                    //     printf("Which function to break at? (Ex: GetProcAddress)\n");
 
-                                        if (!fgets(breakBuffer, 99, stdin)) {
-                                         printf("buffer to large\n");
-                                        }
+                                    //     if (!fgets(breakBuffer, 99, stdin)) {
+                                    //      printf("buffer to large\n");
+                                    //     }
 
-                                        breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
+                                    //     breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
 
-                                       if (!getRemoteImports(hProcess, breakBuffer, 0, 0)) {
-                                        printf("Error setting the breakpoint at %s\n", breakBuffer);
-                                       }
+                                    //    if (!getRemoteImports(hProcess, breakBuffer, 0, 0)) {
+                                    //     printf("Error setting the breakpoint at %s\n", breakBuffer);
+                                    //    }
 
-                                       continue;
-                                    }
+                                    //    continue;
+                                    // }
 
-                                    else if (mystrcmp(buff, "!ccraw") == 0) {
+                                    // else if (mystrcmp(buff, "!ccraw") == 0) {
 
-                                        char breakBuffer[100] = {0};
-                                        if (!breakBuffer) {
-                                        printf("Memory allocation error\n");
-                                        }
+                                    //     char breakBuffer[100] = {0};
+                                    //     if (!breakBuffer) {
+                                    //     printf("Memory allocation error\n");
+                                    //     }
 
-                                        printf("Which address to break at? (Ex: 0x00007FFCEFEF7C60)\n");
+                                    //     printf("Which address to break at? (Ex: 0x00007FFCEFEF7C60)\n");
 
-                                        if (!fgets(breakBuffer, 99, stdin)) {
-                                         printf("buffer to large\n");
-                                        }
+                                    //     if (!fgets(breakBuffer, 99, stdin)) {
+                                    //      printf("buffer to large\n");
+                                    //     }
 
-                                        breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
+                                    //     breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
 
-                                        // convert string to address 
-                                        void* targetAddress = (void*)strtoull(breakBuffer, NULL, 0);
+                                    //     // convert string to address 
+                                    //     void* targetAddress = (void*)strtoull(breakBuffer, NULL, 0);
 
-                                        BYTE cc[5] = {0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
-                                        if (!WriteProcessMemory(hProcess, targetAddress, cc, sizeof(cc), NULL)) {
-                                            printf("Failed to write breakpoint at %s: error %lu\n", breakBuffer, GetLastError());
-                                        } else {
-                                            printf("Wrote a breakpoint at %s\n", breakBuffer);
-                                        }
+                                    //     BYTE cc[5] = {0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
+                                    //     if (!WriteProcessMemory(hProcess, targetAddress, cc, sizeof(cc), NULL)) {
+                                    //         printf("Failed to write breakpoint at %s: error %lu\n", breakBuffer, GetLastError());
+                                    //     } else {
+                                    //         printf("Wrote a breakpoint at %s\n", breakBuffer);
+                                    //     }
 
-                                        continue;
-                                    }
+                                    //     continue;
+                                    // }
 
-                                    // Get section data 
-                                    else if (mystrcmp(buff, "!var") == 0) {
-                                        if (!getVariables(pi.dwProcessId, 0)) {
-                                            printf("Error enumerating sections\n");
-                                            }
-                                        continue;
-                                    }
+                                    // // Get section data 
+                                    // else if (mystrcmp(buff, "!var") == 0) {
+                                    //     if (!getVariables(pi.dwProcessId, 0)) {
+                                    //         printf("Error enumerating sections\n");
+                                    //         }
+                                    //     continue;
+                                    // }
 
                                     else if (mystrcmp(buff, "kill") == 0) {
                                        pNtTerminateProcess NtTerminateProcess = (pNtTerminateProcess)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtTerminateProcess");
@@ -4142,6 +4414,94 @@ BOOL WINAPI debug(LPCVOID param) {
                                             continue;
                                         }
 
+                                        else if (mystrcmp(buff, "!rx") == 0) {
+                                            findRX(hProcess, peb.Base);
+                                            continue;
+                                        }
+
+                                        else if (mystrcmp(buff, "!mz") == 0) {
+                                            findMZ(hProcess);
+                                            continue;
+                                        }
+
+                                        else if (mystrcmp(buff, "!stubs") == 0) {
+                                            listSyscalls(hProcess);
+                                            continue;
+                                        }
+
+                                        // else if (mystrcmp(buff, "!inj") == 0) {
+                                        //     printf("Path to file?\n");
+                                        //     char injBuff[256];
+                                        //     fgets(injBuff, sizeof(injBuff), stdin);
+                                        //     injBuff[strcspn(injBuff, "\n")] = '\0';
+                                        //     inject(hProcess, injBuff);
+                                        // }
+
+                                        else if (mystrcmp(buff, "!heap") == 0) {
+                                            printf("Heap @ 0x%p\n", peb.heap);
+                                            walkHeap(hProcess, peb.heap);
+                                            continue;
+                                        }
+
+                                        // Give option to rescan
+                                        else if (mystrcmp(buff, "!threads") == 0) {
+                                            char threadBuff[32];
+                                            writeCon("Would you like to dump registers?\n");
+                                            fgets(threadBuff, sizeof(threadBuff), stdin);
+                                            threadBuff[strcspn(threadBuff, "\n")] = '\0';
+
+                                            int getReg = 0;
+                                            if (mystrcmp(threadBuff, "y") == 0 || mystrcmp(threadBuff, "Y") == 0 || mystrcmp(threadBuff, "Yes") == 0 || mystrcmp(threadBuff, "yes") == 0) {
+                                                getReg = 1;
+                                            }
+                                            printThreadInfo(getReg, NOTHREADNUM);
+                                            continue;
+                                        }
+
+                                        else if (mystrcmp(buff, "!bp") == 0) {  
+                                            HANDLE hFile = CreateFileA("break.dll", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                                            char path[128];
+                                            GetFinalPathNameByHandleA(hFile, path, sizeof(path), 0);
+
+                                            if (breakSet == 0) {
+                                            injectBridge(hProcess, path);
+                                            fillPack("Debug Handler", 0, NULL);
+                                            breakSet = 1;
+                                            }
+
+                                            char bpBuff[32];
+                                            writeCon("Which Address to Break At??\n");
+                                            fgets(bpBuff, sizeof(bpBuff), stdin);
+                                            bpBuff[strcspn(bpBuff, "\n")] = '\0';
+
+                                            // Had to add for correct formating
+                                            ULONGLONG addr = 0;
+                                            if (sscanf(bpBuff, "%llx", &addr) != 1 || addr == 0) {
+                                            printf("Error: invalid address '%s'\n", bpBuff);
+                                            continue;
+                                            }
+                                            
+                                            if (!BreakPoint(hProcess, addr)) {
+                                                writeCon("Failed to set breakpoint\n");
+                                            }
+                                            continue;
+                                        }
+                                       
+                                        else if (mystrcmp(buff, "!swap") == 0) {
+                                            writeCon("Which Thread number to swap too?\n");
+                                            char swapBuff[32];
+                                            fgets(swapBuff, sizeof(swapBuff), stdin);
+                                            swapBuff[strcspn(swapBuff, "\n")] = '\0';
+
+                                            int option = atoi(swapBuff);
+                                            
+                                            void* handle = printThreadInfo(0, option);  // Getting thread id
+                                            threadId = (DWORD*)handle;
+                                            pi.dwProcessId = (DWORD*)handle;
+                                            getThreads(threadId);
+                                            writeCon("Swapped thread and dumped registers\n");
+                                        }
+                                       
                                         else {
                                             writeCon("Wrong command\n");
                                         }
@@ -4204,7 +4564,7 @@ int wmain(int argc, wchar_t* argv[]) {
     LPVOID fiberMain = ConvertThreadToFiber(NULL); 
     LPVOID debugFiber = CreateFiber(0, debug, argv[1]);
 
-    if (argc < 3) {
+    if (argc < 2) {
         writeCon("\033[35mGlyph - Remote debugger engine by Sleepy\033[0m\n");
         logo();
         writeCon("\x1b[92mUsage:\x1b[0m\n-c <Remote process name> ex. Notepad.exe (ATTACH)\n<path to executable> ex. C:\\Windows\\System32\\notepad.exe start(START)\n-c <process> -b (BREAKPOINT)\n");
