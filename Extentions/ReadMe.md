@@ -34,3 +34,13 @@ PE builder, can build full runnable PEs from memory
 ## rsrcWalker.dll
 
 Walks the PE resource directory from disk. the source can be found under the rsrc directory here.
+
+## bridge 
+
+This program injects a breakpoint handler. It is needed internally by the engine to set breakpoints.
+You must move this into your current working directory, wherever glyphs running, to set breakpoints.
+
+## break
+
+This is the handler. I will use this for other things in the future but for now it exclusively sets a
+breakpoint handler. It is needed for breakpoints. Make sure to move this to the current working dir.
