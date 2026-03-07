@@ -446,6 +446,15 @@ int mystrlen(char* buff) {
     }
 }
 
+char* zero(char* buff, char* delimiter) {
+    int size = mystrlen(buff);
+    for (int i=0; i < size; i++) {
+        if (buff[i] == '\n') {
+            buff[i] = '\0'; 
+            return buff;
+        }
+    }
+}
 int writeCon(char* buff) {
     void* handle = GetStdHandle(-11);
 
@@ -989,12 +998,8 @@ if (!ReadProcessMemory(hProcess, (BYTE*)baseAddress + dh.e_lfanew + offsetof(IMA
     return 1;
 }
 
-if (entry == 1) {
-uintptr_t entry = (uintptr_t)baseAddress + oh.AddressOfEntryPoint;
-peb.Entry = entry;
-printf("Entry: %p\n", (void*)entry);
-return 0;
-}
+uintptr_t entryPoint = (uintptr_t)baseAddress + oh.AddressOfEntryPoint;
+peb.Entry = entryPoint;
 
 
 //some dlls like ntdll dont have imports
@@ -3554,6 +3559,27 @@ printf("[!]bridge setup\n");
 return 0;
 }
 
+typedef void (__stdcall *cmdPack)(char*, int, int);
+void* cmdMod = NULL;
+cmdPack cmd;
+int loadCmdPack(char* option, int getHistory, int startUp) {
+    if (cmdMod == NULL && startUp == 1) {
+    cmdMod = LoadLibrary("cmdPack.dll");
+    if (!cmdMod) {
+        //writeCon("Place cmdPack.dll into working directory...\n");
+        return 2;
+    }
+    cmd = (cmdPack)GetProcAddress(cmdMod, "cmdPack");
+    printf("cmdPack.dll loaded - Additional commands listed Below\n!noob - Tutorial\n!history - cmd history\n");
+    fillPack("cmdPack.dll", 0, cmdMod);
+    }
+
+    if (startUp !=2) {
+    cmd(option, getHistory, startUp);
+    }
+    return 1;
+}
+
 wchar_t* secondParam = NULL; // argv[2]
 wchar_t* dllChoice; // Only for DLLs
 
@@ -3640,11 +3666,7 @@ BOOL WINAPI debug(LPCVOID param) {
             printf("\x1b[92m[+]\x1b[0m Thread address/ID: %lu\n", threadId);
 
             // if -b is found set a breakpoint on that import (breakBuff)
-            if (breakpointSet) {
-                // inject(hProcess, "C:\\Users\\phawk\\OneDrive\\Desktop\\MyC\\Internals\\vehBreak.dll");
-                // fillPack("Debug Handler", 0, NULL);
-                // breakSet = 1;   
-                // printf("%p\n", peb.Entry);                
+            if (breakpointSet) {              
                 BreakPoint(hProcess, peb.Base);
                 writeCon("BreakPoint Set...\n");
             }
@@ -3652,7 +3674,7 @@ BOOL WINAPI debug(LPCVOID param) {
             ////////////////////////////////////////////////////////////////////
             // Each mystrcmp() is a feature, go down the list                   //
             ////////////////////////////////////////////////////////////////////
-
+                    int cmdPacksStartup = 0;
                     while (1) {   
                             
                             if (clipSniper == 1) {  // Clip sniper
@@ -3674,6 +3696,14 @@ BOOL WINAPI debug(LPCVOID param) {
                             char* buff = (char*)readAlloc(AllocatedRegion, offsetHandles + 200);
                             
                             buff[strcspn(buff, "\n")] = '\0';
+
+                            // Loading Optional dll for history, tutorial, cmd storage, more to come
+                            if (cmdPacksStartup == 0) {
+                                int res = loadCmdPack(buff, 0, 1);
+                                cmdPacksStartup = res;
+                            } else if (cmdPacksStartup != 2){
+                                loadCmdPack(buff, 0, 0);
+                            }
                                                                        
                             if ((unsigned char*)buff[0] != 00) {
                                         
@@ -4008,7 +4038,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                     }
 
                                     else if (mystrcmp(buff, "!entry") == 0) {
-                                        getRemoteImports(hProcess, NULL, 1, 0);
+                                        printf("Entry @ 0x%p\n", peb.Entry);
                                         continue;
                                     }
 
@@ -4495,7 +4525,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             writeCon("Which Thread number to swap too?\n");
                                             char swapBuff[32];
                                             fgets(swapBuff, sizeof(swapBuff), stdin);
-                                            swapBuff[strcspn(swapBuff, "\n")] = '\0';
+                                            zero(swapBuff, '\n');
 
                                             int option = atoi(swapBuff);
                                             
