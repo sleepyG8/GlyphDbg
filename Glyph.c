@@ -100,6 +100,10 @@ int fillPack(char* name, int Remove, void* hMod) {
     return 3;
 }
 
+typedef void (__stdcall *cmdPack)(char*, int, int);
+cmdPack cmd;
+void* cmdMod = NULL;
+// Move
 
 struct mystructs {
 PPEB pebaddr;
@@ -3559,9 +3563,6 @@ printf("[!]bridge setup\n");
 return 0;
 }
 
-typedef void (__stdcall *cmdPack)(char*, int, int);
-void* cmdMod = NULL;
-cmdPack cmd;
 int loadCmdPack(char* option, int getHistory, int startUp) {
     if (cmdMod == NULL && startUp == 1) {
     cmdMod = LoadLibrary("cmdPack.dll");
@@ -3570,14 +3571,69 @@ int loadCmdPack(char* option, int getHistory, int startUp) {
         return 2;
     }
     cmd = (cmdPack)GetProcAddress(cmdMod, "cmdPack");
-    printf("cmdPack.dll loaded - Additional commands listed Below\n!noob - Tutorial\n!history - cmd history\n");
-    fillPack("cmdPack.dll", 0, cmdMod);
+    writeCon("cmdPack.dll loaded - Additional commands listed Below\n!noob - Tutorial\n!history - cmd history\n");
+    //fillPack("cmdPack", 0, cmdMod);
     }
 
     if (startUp !=2) {
     cmd(option, getHistory, startUp);
     }
     return 1;
+}
+
+int cmdPacksStartup = 0;
+int Editor(void* hProcess) {
+
+    void* hMod = LoadLibrary("Edit.dll");
+    if (!hMod) return 0;
+
+    typedef int(__stdcall *Editor)(void);
+
+    Editor edit = (Editor)GetProcAddress(hMod, "Editor");
+    if (!edit) return 0;
+
+    FreeLibrary(cmdMod);
+    int res = edit();
+
+    // Local ctrl+p
+    if (res == 1) {
+        printf("Hot swapping dlls\n");
+        void* newMod = LoadLibrary("cmdPackEdit.dll"); // New dll
+        if (!newMod) printf("Error Loading cmdPackEdit\n");
+        cmd = GetProcAddress(newMod, "cmdPack");    // new func same name
+        if (!cmd) printf("Error getting cmdPack export\n");
+        cmdPacksStartup = 1;
+        cmdMod = newMod;
+        return 0;
+    }
+
+    // Inject crtl+i
+    if (res == 2) {
+        void* newMod = LoadLibrary("cmdPack.dll");  // Local dll stays the same
+        if (newMod) {
+        cmd = GetProcAddress(newMod, "cmdPack");    // Set cmd pack as OG
+        }
+
+        HANDLE hFile = CreateFileA("cmdPackEdit.dll", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (!hFile) {
+           printf("Please place cmdPackEdit.dll into working directory...\n");
+           return 0;
+        }
+        char path[128];
+        GetFinalPathNameByHandleA(hFile, path, sizeof(path), 0);
+        printf("%s %lu\n", path, strlen(path));
+        injectBridge(hProcess, path);
+        CloseHandle(hFile);
+        return 0;
+    }
+
+    void* newMod = LoadLibrary("cmdPack.dll");  // Local dll stays the same
+    if (newMod) {
+    cmd = GetProcAddress(newMod, "cmdPack");    // Set cmd pack as OG
+    }
+    printf("Abort...\n");
+    return 0;
+
 }
 
 wchar_t* secondParam = NULL; // argv[2]
@@ -3674,7 +3730,6 @@ BOOL WINAPI debug(LPCVOID param) {
             ////////////////////////////////////////////////////////////////////
             // Each mystrcmp() is a feature, go down the list                   //
             ////////////////////////////////////////////////////////////////////
-                    int cmdPacksStartup = 0;
                     while (1) {   
                             
                             if (clipSniper == 1) {  // Clip sniper
@@ -3701,7 +3756,7 @@ BOOL WINAPI debug(LPCVOID param) {
                             if (cmdPacksStartup == 0) {
                                 int res = loadCmdPack(buff, 0, 1);
                                 cmdPacksStartup = res;
-                            } else if (cmdPacksStartup != 2){
+                            } else if (cmdPacksStartup != 2 && cmdMod){
                                 loadCmdPack(buff, 0, 0);
                             }
                                                                        
@@ -3940,6 +3995,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                        NTSTATUS status = NtTerminateProcess(hProcess, 0);
                                        if (NT_SUCCESS(status)) {
                                         printf("Process[%lu] killed\n", pi.dwProcessId);
+                                        return 0;
                                        } else {
                                         printf("NTSTATUS: 0x%08X - Error killing\n", status);
                                        }   
@@ -4534,6 +4590,10 @@ BOOL WINAPI debug(LPCVOID param) {
                                             pi.dwProcessId = (DWORD*)handle;
                                             getThreads(threadId);
                                             writeCon("Swapped thread and dumped registers\n");
+                                        }
+
+                                        else if (mystrcmp(buff, "!edit") == 0) {
+                                            Editor(hProcess);
                                         }
                                        
                                         else {
