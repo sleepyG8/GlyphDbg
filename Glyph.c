@@ -3592,6 +3592,7 @@ int Editor(void* hProcess) {
     Editor edit = (Editor)GetProcAddress(hMod, "Editor");
     if (!edit) return 0;
 
+    printf("Editor Usage:\n[*]Ctrl+P is local load\n[*]Ctrl+I to Inject into debugee\n[*]Exit to Abort\n");
     FreeLibrary(cmdMod);
     int res = edit();
 
