@@ -453,12 +453,13 @@ int mystrlen(char* buff) {
 char* zero(char* buff, char* delimiter) {
     int size = mystrlen(buff);
     for (int i=0; i < size; i++) {
-        if (buff[i] == '\n') {
+        if (buff[i] == delimiter) {
             buff[i] = '\0'; 
             return buff;
         }
     }
 }
+
 int writeCon(char* buff) {
     void* handle = GetStdHandle(-11);
 
@@ -1360,6 +1361,16 @@ int listSyscalls(HANDLE hProcess) {
 }
 }
 
+// function for general mem walking stop
+int endWalk() {
+    char question[8];
+    writeCon("Enter to continue, q to quit\n");
+    fgets(question, sizeof(question), stdin);
+    zero(question, '\n');
+    if (question[0] == 'q') return 1;
+    return 0;
+}
+
 // find dlls backup
 int findMZ(HANDLE hProcess) {
 
@@ -1377,7 +1388,7 @@ int findMZ(HANDLE hProcess) {
     if (MZ[0] == 'M' && MZ[1] == 'Z') {
         printf("MZ found at 0x%p\n", base);
         getRemoteExports(hProcess, base, "");
-        getchar();
+        if (endWalk() == 1) return 0;
         
     }
 
@@ -1423,6 +1434,9 @@ int findRX(HANDLE hProcess, unsigned char* base) {
             printf("ret found at %p\n", base + j);
             printf("Function Size: %lu\n", j);
             readRawAddr(hProcess, base + j, j, 0);
+
+            if (endWalk() == 1) return 0;
+
             base = base + j + 2;
             found = 1;
             foundNum++;
@@ -3581,6 +3595,18 @@ int loadCmdPack(char* option, int getHistory, int startUp) {
     return 1;
 }
 
+int assembler(char* pathToFile) {
+    typedef void*(__stdcall *assemble)(char*);
+    void* hMod = LoadLibraryA("avengers.dll");
+    if (!hMod) {
+        writeCon("Make sure avengers.dll is in current directory...\n");
+        return 0;
+    }
+    assemble asm = (assemble*)GetProcAddress(hMod, "assemble");
+    asm(pathToFile);
+    return 0;
+}
+
 int cmdPacksStartup = 0;
 int Editor(void* hProcess) {
 
@@ -3628,6 +3654,11 @@ int Editor(void* hProcess) {
         return 0;
     }
 
+    if (res == 3) {
+        assembler("cmdPackEdit.c"); // file extention doesnt matter
+        return 0;
+    }
+
     void* newMod = LoadLibrary("cmdPack.dll");  // Local dll stays the same
     if (newMod) {
     cmd = GetProcAddress(newMod, "cmdPack");    // Set cmd pack as OG
@@ -3635,6 +3666,59 @@ int Editor(void* hProcess) {
     printf("Abort...\n");
     return 0;
 
+}
+
+typedef struct {
+    uint64_t addr;
+    int rva;
+    int type;
+    uint64_t resolved;
+
+} redirection;
+
+redirection* direction;
+
+int addrTracker = 0; // tracking number of redirection structs for main loop also
+int findJmp(void* hProcess, unsigned char* codeStart, int Size) {
+
+    unsigned char* buff = malloc(Size);
+    void* sizeToRead = Size;
+    ReadProcessMemory(hProcess, codeStart, buff, Size, 0);
+
+    int tracker = 0;
+    for (int i=0; i < Size; i++) {
+        if (buff[i] != 0xE8) continue;
+        if (buff[i+6] == 0x48 || buff[i+5] == 0x48) {
+        tracker++;
+        }
+    }
+
+    direction = malloc(tracker * sizeof(redirection));
+
+    for (int p=0; p < tracker; p++) {
+        direction[p].addr = 0;
+        direction[p].resolved = 0;
+        direction[p].rva = 0;
+        direction[p].type = 0;
+    }
+    
+    for (int i=0; i < Size; i++) {
+        if (buff[i] != 0xE8 && buff[i] != 0xE9) continue;
+        if (buff[i+6] == 0x48 || buff[i+5] == 0x48) {
+        //printf("%lu Jump found at %p\n", i, (void*)(codeStart + i));
+        } else continue;
+
+        direction[addrTracker].addr = (void*)(codeStart + i);
+        direction[addrTracker].rva = i;
+        if (buff[i] == 0xE8) direction[addrTracker].type = 1;
+        if (buff[i] == 0xE9) direction[addrTracker].type = 2;
+
+        addrTracker++;
+        if (addrTracker == tracker) break;
+
+    }
+
+    return 0;
 }
 
 wchar_t* secondParam = NULL; // argv[2]
@@ -3718,7 +3802,12 @@ BOOL WINAPI debug(LPCVOID param) {
             // Getting function boundaries
             getExceptionDir(hProcess, 0);
 
+            // Getting sections
             getVariables(pi.dwProcessId, 1);
+
+            // finding all calls/jmps
+            int Size = (unsigned char*)codeRegions->codeBounds[0].end - (unsigned char*)codeRegions->codeBounds[0].start;
+            findJmp(hProcess, codeRegions->codeBounds[0].start, Size);
 
             printf("\x1b[92m[+]\x1b[0m Thread address/ID: %lu\n", threadId);
 
@@ -3756,8 +3845,11 @@ BOOL WINAPI debug(LPCVOID param) {
                             // Loading Optional dll for history, tutorial, cmd storage, more to come
                             if (cmdPacksStartup == 0) {
                                 int res = loadCmdPack(buff, 0, 1);
-                                cmdPacksStartup = res;
-                            } else if (cmdPacksStartup != 2 && cmdMod){
+                                cmdPacksStartup = res; // res is supposed to be 1
+                            } 
+                            
+                            // If loaded dont do startup also this catches the !edit hot swap
+                            if (cmdPacksStartup = 1 && cmdMod){
                                 loadCmdPack(buff, 0, 0);
                             }
                                                                        
@@ -3933,62 +4025,63 @@ BOOL WINAPI debug(LPCVOID param) {
                                     }
 
                                     // else if (mystrcmp(buff, "!cc") == 0) {
-                                        
+                                    //    
                                     //     char breakBuffer[100] = {0};
                                     //     if (!breakBuffer) {
                                     //     printf("Memory allocation error\n");
                                     //     }
-
+                                    //
                                     //     printf("Which function to break at? (Ex: GetProcAddress)\n");
-
+                                    //
                                     //     if (!fgets(breakBuffer, 99, stdin)) {
                                     //      printf("buffer to large\n");
                                     //     }
-
+                                    //
                                     //     breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
-
+                                    //
                                     //    if (!getRemoteImports(hProcess, breakBuffer, 0, 0)) {
                                     //     printf("Error setting the breakpoint at %s\n", breakBuffer);
                                     //    }
-
+                                    //
                                     //    continue;
                                     // }
-
+                                    //
                                     // else if (mystrcmp(buff, "!ccraw") == 0) {
-
+                                    //
                                     //     char breakBuffer[100] = {0};
                                     //     if (!breakBuffer) {
                                     //     printf("Memory allocation error\n");
                                     //     }
-
+                                    //
                                     //     printf("Which address to break at? (Ex: 0x00007FFCEFEF7C60)\n");
-
+                                    //
                                     //     if (!fgets(breakBuffer, 99, stdin)) {
                                     //      printf("buffer to large\n");
                                     //     }
-
+                                    //
                                     //     breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
-
+                                    //
                                     //     // convert string to address 
                                     //     void* targetAddress = (void*)strtoull(breakBuffer, NULL, 0);
-
+                                    //
                                     //     BYTE cc[5] = {0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
                                     //     if (!WriteProcessMemory(hProcess, targetAddress, cc, sizeof(cc), NULL)) {
                                     //         printf("Failed to write breakpoint at %s: error %lu\n", breakBuffer, GetLastError());
                                     //     } else {
                                     //         printf("Wrote a breakpoint at %s\n", breakBuffer);
                                     //     }
-
+                                    //
                                     //     continue;
                                     // }
+                                    //
 
-                                    // // Get section data 
-                                    // else if (mystrcmp(buff, "!var") == 0) {
-                                    //     if (!getVariables(pi.dwProcessId, 0)) {
-                                    //         printf("Error enumerating sections\n");
-                                    //         }
-                                    //     continue;
-                                    // }
+                                    // Get section data 
+                                    else if (mystrcmp(buff, "!var") == 0) {
+                                        if (!getVariables(pi.dwProcessId, 0)) {
+                                            printf("Error enumerating sections\n");
+                                            }
+                                        continue;
+                                    }
 
                                     else if (mystrcmp(buff, "kill") == 0) {
                                        pNtTerminateProcess NtTerminateProcess = (pNtTerminateProcess)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtTerminateProcess");
@@ -4595,6 +4688,29 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                         else if (mystrcmp(buff, "!edit") == 0) {
                                             Editor(hProcess);
+                                        }
+
+                                        else if (mystrcmp(buff, "!jmp") == 0) {
+                                            int askUserTracker = 0;
+                                            for (int i=0; i < addrTracker; i++) {
+                                                if (direction[i].type == 1) {
+                                                printf("[%lu] CALL 0x%p\tRVA: %lu\tTYPE: %lu\n", i, direction[i].addr, direction[i].rva, direction[i].type);
+                                                //readRawAddr(hProcess, direction[i].addr, 5, 0);
+                                                } else if (direction[i].type == 2) {
+                                                printf("[%lu] JMP 0x%p\tRVA: %lu\tTYPE: %lu\n", i, direction[i].addr, direction[i].rva, direction[i].type);
+                                                //readRawAddr(hProcess, direction[i].addr, 5, 0);
+                                                } else if (direction[i].type == 3) break;
+
+                                                if (askUserTracker == 100) {
+                                                    int answer = endWalk();
+                                                    if (answer == 1) break;
+                                                    if (answer == 0) {
+                                                        askUserTracker = 0;
+                                                        continue;
+                                                    }
+                                                }
+                                                askUserTracker++;
+                                            }
                                         }
                                        
                                         else {
