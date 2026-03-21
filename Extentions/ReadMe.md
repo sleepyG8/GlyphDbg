@@ -44,3 +44,7 @@ You must move this into your current working directory, wherever glyphs running,
 
 This is the handler. I will use this for other things in the future but for now it exclusively sets a
 breakpoint handler. It is needed for breakpoints. Make sure to move this to the current working dir.
+
+## avengers.dll
+
+An assembler I wrote. Its used in !edit when writing assembly
