@@ -3604,6 +3604,7 @@ int assembler(char* pathToFile) {
     }
     assemble asm = (assemble*)GetProcAddress(hMod, "assemble");
     asm(pathToFile);
+    FreeLibrary(hMod);
     return 0;
 }
 
@@ -3656,14 +3657,13 @@ int Editor(void* hProcess) {
 
     if (res == 3) {
         assembler("cmdPackEdit.c"); // file extention doesnt matter
-        return 0;
     }
 
     void* newMod = LoadLibrary("cmdPack.dll");  // Local dll stays the same
     if (newMod) {
     cmd = GetProcAddress(newMod, "cmdPack");    // Set cmd pack as OG
     }
-    printf("Abort...\n");
+
     return 0;
 
 }
