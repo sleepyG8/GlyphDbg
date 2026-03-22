@@ -1066,7 +1066,7 @@ while (TRUE) {
         // read orig and thunk addr in the loop again to stop infinite loop
         if (!ReadProcessMemory(hProcess, (LPCVOID)origThunkAddr, &origThunk, sizeof(origThunk), NULL) || !ReadProcessMemory(hProcess, (LPCVOID)thunkAddr, &thunkData, sizeof(thunkData), NULL)) {
             printf("error reading thunk\n");
-            break;
+            return 0;
             }
 
         if (origThunk.u1.AddressOfData == 0) break;
@@ -1169,6 +1169,8 @@ while (TRUE) {
 // Move forward 1 ID just like my ID++
 importDescAddr += sizeof(IMAGE_IMPORT_DESCRIPTOR);
 }
+
+return 1;
 }
 
 typedef struct {
@@ -1469,7 +1471,7 @@ int BreakPoint(void* hProcess, void* address) {
 
 int count = 0;
 int walkHeap(void* hProcess, void* heapAddr) {
-
+    for (int i=0; ; i++) {
     unsigned char buffer[0x1000];
     if (!ReadProcessMemory(hProcess, heapAddr, &buffer, sizeof(buffer), 0)) return 1;
 
@@ -1484,9 +1486,9 @@ int walkHeap(void* hProcess, void* heapAddr) {
     int res = getMBI(hProcess, heapAddr, 1);
     printf("res: %lu\n", res);
     if (res != 4) return 0;
+    }
 
-    walkHeap(hProcess, heapAddr);
-
+    return 0;
 }
 
 // Reading Raw address and parsing the data
@@ -1729,7 +1731,8 @@ WCHAR dllName[MAX_PATH] = {0};
 // Peb :)
 BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWORD id) {
     
-    //SuspendThread(thread); // Need to suspend
+    // wow this fixed a lot, the list wasnt populated / moved this before PEB
+    WaitForInputIdle(hProcess, INFINITE);
 
     HMODULE hNtDll = GetModuleHandle("ntdll.dll");
     if (!hNtDll) {
@@ -1800,9 +1803,6 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
     wprintf(L"\x1b[92m[+]\x1b[0m Command Line: %ls\n", cmd);
     
     size_t bytesread;
-
-    // wow this fixed a lot, the list wasnt populated
-    WaitForInputIdle(hProcess, 500);
 
     if (!ReadProcessMemory(hProcess, (LPCVOID)pbi.Ldr , &ldrData, sizeof(ldrData), &bytesread)) {
             printf("error getting ldr, retry... %lu - %lu\n", GetLastError(), bytesread);
@@ -3797,7 +3797,9 @@ BOOL WINAPI debug(LPCVOID param) {
             GetPEBFromAnotherProcess(hProcess, pi.dwThreadId, pi.dwProcessId);
 
             // Loading the Import struct
-            getRemoteImports(hProcess, NULL, 0, 0);
+            // if import read fails, notify user. Sometimes this fails because of handle perms only when creating a process.
+            // I needed this to gracefully exit on bad reads
+            if (getRemoteImports(hProcess, NULL, 0, 0) != 0) {
 
             // Getting function boundaries
             getExceptionDir(hProcess, 0);
@@ -3809,11 +3811,38 @@ BOOL WINAPI debug(LPCVOID param) {
             int Size = (unsigned char*)codeRegions->codeBounds[0].end - (unsigned char*)codeRegions->codeBounds[0].start;
             findJmp(hProcess, codeRegions->codeBounds[0].start, Size);
 
+            } else {
+                printf("Reconnect with -c for all features.\n");
+                pNtTerminateProcess NtTerminateProcess = (pNtTerminateProcess)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtTerminateProcess");
+                NtTerminateProcess(NULL, 0);
+                return 0;
+            }
+
             printf("\x1b[92m[+]\x1b[0m Thread address/ID: %lu\n", threadId);
 
             // if -b is found set a breakpoint on that import (breakBuff)
-            if (breakpointSet) {              
-                BreakPoint(hProcess, peb.Base);
+            if (breakpointSet) {
+                
+                HANDLE hFile = CreateFileA("break.dll", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (!hFile) {
+                    printf("Please place break.dll into working directory...\n");
+                    return 1;
+                }
+                char path[128];
+                GetFinalPathNameByHandleA(hFile, path, sizeof(path), 0);
+
+                injectBridge(hProcess, path);
+                fillPack("Debug Handler", 0, NULL);
+
+                void* address = 0;       
+                for (int i=0; i < countImport; i++) {
+                    if (mystrcmp(imports[i].name, breakBuff) == 0) {
+                        printf("Setting bp on %s\n", imports[i].name);
+                        address = imports[i].address;
+                        break;
+                    }
+                }
+                BreakPoint(hProcess, address);
                 writeCon("BreakPoint Set...\n");
             }
 
@@ -4695,13 +4724,14 @@ BOOL WINAPI debug(LPCVOID param) {
                                             for (int i=0; i < addrTracker; i++) {
                                                 if (direction[i].type == 1) {
                                                 printf("[%lu] CALL 0x%p\tRVA: %lu\tTYPE: %lu\n", i, direction[i].addr, direction[i].rva, direction[i].type);
-                                                //readRawAddr(hProcess, direction[i].addr, 5, 0);
+                                                readRawAddr(hProcess, direction[i].addr, 5, 0);
                                                 } else if (direction[i].type == 2) {
                                                 printf("[%lu] JMP 0x%p\tRVA: %lu\tTYPE: %lu\n", i, direction[i].addr, direction[i].rva, direction[i].type);
-                                                //readRawAddr(hProcess, direction[i].addr, 5, 0);
+                                                readRawAddr(hProcess, direction[i].addr, 5, 0);
                                                 } else if (direction[i].type == 3) break;
 
-                                                if (askUserTracker == 100) {
+                                                if (askUserTracker == 10) {
+                                                    printf("\n[!]%lu of %lu\n", i, addrTracker);
                                                     int answer = endWalk();
                                                     if (answer == 1) break;
                                                     if (answer == 0) {
@@ -4868,7 +4898,7 @@ int wmain(int argc, wchar_t* argv[]) {
         
         breakBuff = (char*)malloc(100 * sizeof(char));
                                              
-        printf("\x1b[92m[-]\x1b[0m What address to break at? Might crash the proc\n");
+        printf("\x1b[92m[-]\x1b[0m Which Function to break at?\n");
                                    
         if  (!fgets(breakBuff, 99, stdin)) {
             printf("buffer to large\n");
