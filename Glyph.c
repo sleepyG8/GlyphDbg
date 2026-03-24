@@ -597,6 +597,16 @@ BYTE* readAlloc(BYTE* remoteMem, int startingOffset) {
 
 }
 
+int readString(uint64_t bytes, char* out) {
+    if ((bytes >> 64) == 00) return 1;
+    for (int i=0; i < 8; i++) {
+        if (isprint((bytes >> (i*8) & 0xFF))) {
+        out[i] = (bytes >> (i*8) & 0xFF);
+        } else { return 1; }
+    }
+    return 0;
+}
+
 typedef struct {
     uint64_t address;
     DWORD size;
@@ -678,7 +688,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                     
                         //printf("%llX - %llX\n", finalComputedAddress, imports[k].address);
                         printf("\x1b[32m%s ->\x1b[0m 0x%"PRIx64":\t%s\t%s\n", imports[k].name, (uint64_t)imports[k].address, insn[i].mnemonic, insn[i].op_str);
-                    
+
                         // Checking function names and giving a global Score
                         MalCheck(imports[k].name);
 
@@ -691,7 +701,23 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
 
                 } else {
                     if (printed == 0) {
-                    printf("0x%"PRIx64":\t%s\t%s -> 0x%llX\n", insn[i].address, insn[i].mnemonic, insn[i].op_str, finalComputedAddress);
+                    char outString[16];
+                    // printing rip resolved addr + either string or bytes
+                    if (readString(finalComputedAddress, &outString) == 0) {
+                    outString[8] = '\0';
+                    printf("0x%"PRIx64":\t%s\t%s -> 0x%p -> %s\n", insn[i].address, insn[i].mnemonic, insn[i].op_str, finalAddress, outString);
+                    } else {
+                    printf("0x%"PRIx64":\t%s\t%s -> 0x%p -> ", insn[i].address, insn[i].mnemonic, insn[i].op_str, finalAddress);
+                    if (((finalComputedAddress >> 5*8) & 0xFF) != 0x7F) {
+                    for (int p=0; p < 8; p++) {
+                        printf("%02X ", (finalComputedAddress >> p*8) & 0xFF);
+                    }
+                    printf("\n");
+                    } else {
+                        printf("0x%p\n", finalComputedAddress);
+                    }
+
+                    }
                     printed = 1;
                     }
                 }
@@ -3127,6 +3153,8 @@ BOOL printHelp() {
 
     writeCon("!write    - Write to a Address ex. CC\n");
 
+    writeCon("!threads  - Get all threads\n");
+
     writeCon("!swap     - Swap thread by entry #\n");
 
     writeCon("\n-- Memory & Data Inspection --\n");
@@ -3140,6 +3168,8 @@ BOOL printHelp() {
     writeCon("!sub      - Dump bytes before Address (Use for RIP)\n");
 
     writeCon("!func     - List all function boundaries\n");
+
+    writeCon("!jmp      - Get all calls and jumps\n");
     
     writeCon("!mbi      - Get MBI info (only for unprotected processes)\n");
     
@@ -3153,8 +3183,6 @@ BOOL printHelp() {
     
     writeCon("!entry    - Get entry address\n");
 
-    writeCon("!vehtable - Read remote VEH table\n");
-
     writeCon("!dllcheck - walk remote DLL sections\n");
 
     writeCon("!dllexp   - Check remote DLLs exports (Also pulls sycall nums from ntdll)\n");
@@ -3162,6 +3190,8 @@ BOOL printHelp() {
     writeCon("!wor      - Walker object ranger - Object scanner\n");
 
     writeCon("!hooked   - View all hooked functions\n");
+
+    writeCon("!heap     - Dump heap\n");
 
     writeCon("!static   - Disasm a file from Disk\n");
 
@@ -3175,8 +3205,6 @@ BOOL printHelp() {
 
     writeCon("!stubs    - Dump syscall stubs\n");
     
-    writeCon("!Inject   - Inject an extention Dll - Must have the DebuggerInjector.exe\n");
-
     writeCon("\n-- Process & System Info --\n");
     
     writeCon("!proc     - Display all running processes\n");
@@ -3220,6 +3248,8 @@ BOOL printHelp() {
     writeCon(":wsl        - Drop into running wsl cmd line\n");
 
     writeCon(":cmd        - Drop into cmd.exe\n");
+
+    writeCon("!edit       - Extention editor + assembler\n");
     
     writeCon("docs        - Go to documentation online\n");
 
@@ -4347,6 +4377,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             }
                                              
                                             printf("<%lu>: Begin: 0x%p\tEnd: 0x%p - Size: %lu\tType: %02X\n", functions[i].num, (void*)functions[i].begin, (void*)functions[i].end, functions[i].size, functions[i].type);   
+                                        
                                         }
                                     continue;
                                     }
@@ -4406,6 +4437,19 @@ BOOL WINAPI debug(LPCVOID param) {
                                         
                                         }
 
+                                    }
+
+                                    // finish cfg graph
+                                    else if (mystrcmp(buff, "!excaliber") == 0) {
+                                        
+                                        for (int i=0; i < funcCount; i++) {
+
+                                            if (functions[i].begin == peb.Entry) {
+                                                readRawAddr(hProcess, functions[i].begin, 999, i);
+                                            }                                        
+                                        }
+                                    
+                                        continue;
                                     }
 
                                         else if (mystrcmp(buff, "!save") == 0) {
