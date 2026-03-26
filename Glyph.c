@@ -640,10 +640,17 @@ CodeRegion* codeBounds;
 Regions* codeRegions;
 
 int numOfFunction = 0;
+
+// typedef struct {
+//     uint64_t address;
+// } Last;
+// Last lastCalled[10] = {0, 0, 0, 0, 0, 0, 0, 0};
+
 // Capstone disasm
 BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int funcNum, int tillRET) {
     csh handle;
     cs_insn *insn;
+    cs_insn *insn2;         // for jmp and call trace 
     size_t count;           // opstr count from capstone
 
     // First struct entry is the .text just like PE basically codeBounds[0].start
@@ -757,37 +764,63 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                 return 0;
             }
             
+            // Call and jmp trace
+            if (mystrcmp(insn[i].mnemonic, "call") == 0 && insn[i].op_str[0] == '0' && insn[i].op_str[1] == 'x' || mystrcmp(insn[i].mnemonic, "jmp") == 0 && insn[i].op_str[0] == '0' && insn[i].op_str[1] == 'x') {
 
-
-            //printf("%p\t%s\t%s\n", functions[funcNum].op[i].address, functions[funcNum].op[i].mnum, functions[funcNum].op[i].asm);
-
-                if (mystrcmp(insn[i].mnemonic, "call") == 0 && insn[i].op_str[0] == '0' && insn[i].op_str[1] == 'x') {
-                
-                writeCon("\n+++++++CALL-TRACE+++++++++\n");
                 unsigned char bytes[100];
                 ULONGLONG target = 0;
                 if (sscanf(insn[i].op_str, "%llx", &target) != 1 || target == 0) {
                 return FALSE;
                 }
-                ReadProcessMemory(hProcess, target, &bytes, sizeof(bytes), NULL);
 
+                if (insn[i].mnemonic[0] == 'j') {
+                writeCon("\n+++++++JMP-TRACE+++++++++\n");
+                } else {
+                writeCon("\n+++++++CALL-TRACE+++++++++\n");
+                }
+
+                // will remove so i dont call read so much
+                ReadProcessMemory(hProcess, target, &bytes, sizeof(bytes), NULL);
                 for (int i=0; i < sizeof(bytes); i++){
                     printf("%02X ", bytes[i]);
                     if ((i + 1) % 16 == 0) printf("\n");
                 }
-
                 printf("\n");
 
-                 cs_insn *insn2;
-                 int newCount = cs_disasm(handle, bytes, 20, target, 0, &insn2);
+                // 999 to catch ret or even jmp
+                unsigned char rawCall[999];
+                if (!ReadProcessMemory(hProcess, (void*)target, &rawCall, sizeof(rawCall), NULL)) {
+                    printf("Error reading memory %lu - %p\n", GetLastError(), bytes);
+                    break;
+                }
 
-                // printf("newCount: %lu\n", newCount);
-                 if (newCount > 0) {
+                int newCount = cs_disasm(handle, bytes, 999, target, 0, &insn2);
+
+                if (newCount > 0) {
                     for (int j=0; j < newCount; j++) {
-                    //printf("%p\n", target);
+                    if (insn[i].mnemonic[0] == 'j') {
+                    printf("\x1b[95m");
+                    printf(" JMP: 0x%"PRIx64":\t%s\t%s\n", insn2[j].address, insn2[j].mnemonic, insn2[j].op_str, insn2[j].bytes);
+                    } else {
+                    printf("\x1b[92m");
                     printf(" CALL: 0x%"PRIx64":\t%s\t%s\n", insn2[j].address, insn2[j].mnemonic, insn2[j].op_str, insn2[j].bytes);
                     }
+                    printf("\x1b[0m");                  
+                    if (mystrcmp(insn2[j].mnemonic, "ret") == 0 || mystrcmp(insn2[j].mnemonic, "jmp") == 0) break;
+                    }
                 }
+                // for (int p=0; p < 10; p++) {
+                //     if (lastCalled[p].address == 0) {
+                //         lastCalled[p].address = target;
+                //         if (p == 10) {
+                //             for (int j=0; j < 10; j++) {
+                //                 lastCalled[j].address = 0;
+                //             }
+                //         }
+                //     }
+                // } 
+                //disasm(hProcess, rawCall, 999, target, 0, 1);
+                printf("EOC=====================================\n");
             }
 
             if (numofInstructions > 500) {
@@ -3735,7 +3768,6 @@ int findJmp(void* hProcess, unsigned char* codeStart, int Size) {
     for (int i=0; i < Size; i++) {
         if (buff[i] != 0xE8 && buff[i] != 0xE9) continue;
         if (buff[i+6] == 0x48 || buff[i+5] == 0x48) {
-        //printf("%lu Jump found at %p\n", i, (void*)(codeStart + i));
         } else continue;
 
         direction[addrTracker].addr = (void*)(codeStart + i);
@@ -3743,6 +3775,24 @@ int findJmp(void* hProcess, unsigned char* codeStart, int Size) {
         if (buff[i] == 0xE8) direction[addrTracker].type = 1;
         if (buff[i] == 0xE9) direction[addrTracker].type = 2;
 
+        int32_t disp = 0;
+        int negDisp = 0;
+        for (int s=0; s < 4; s++) {
+            disp |= buff[i+s+1] << s*8; // shift disp into place
+        }
+
+        // Check for last byte 00 or 0xFF and skip if not
+        if (buff[i+4] != 0x00 && buff[i+4] != 0xFF) {
+            tracker--;  // move tracker down and dont advance addrTracker
+            continue;
+        }
+
+        uint64_t nextRip = (uint64_t)(codeStart + i) + 5; 
+
+        if (direction[addrTracker].resolved >= codeRegions->codeBounds[0].start && direction[addrTracker].resolved <= codeRegions->codeBounds[0].end) {
+        direction[addrTracker].resolved = (uint64_t)(nextRip + disp);
+        }
+        
         addrTracker++;
         if (addrTracker == tracker) break;
 
