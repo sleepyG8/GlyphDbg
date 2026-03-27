@@ -3203,6 +3203,8 @@ BOOL printHelp() {
     writeCon("!func     - List all function boundaries\n");
 
     writeCon("!jmp      - Get all calls and jumps\n");
+
+    writeCon("!hot       - Get HOT addresses\n");
     
     writeCon("!mbi      - Get MBI info (only for unprotected processes)\n");
     
@@ -3290,7 +3292,7 @@ BOOL printHelp() {
 
     writeCon("!packs      - List Active Extententions\n");
 
-    writeCon("!unload     - Unload an extention by name");
+    writeCon("!unload     - Unload an extention by name\n");
 
     writeCon("start clip  - start clip disasm shortcut\n");
 
@@ -3789,9 +3791,9 @@ int findJmp(void* hProcess, unsigned char* codeStart, int Size) {
 
         uint64_t nextRip = (uint64_t)(codeStart + i) + 5; 
 
-        if (direction[addrTracker].resolved >= codeRegions->codeBounds[0].start && direction[addrTracker].resolved <= codeRegions->codeBounds[0].end) {
+        //if (direction[addrTracker].resolved >= codeRegions->codeBounds[0].start && direction[addrTracker].resolved <= codeRegions->codeBounds[0].end) {
         direction[addrTracker].resolved = (uint64_t)(nextRip + disp);
-        }
+        //}
         
         addrTracker++;
         if (addrTracker == tracker) break;
@@ -4464,7 +4466,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             //printf("i = %lu\n", i);
                                             printf("<%lu>: Begin: %p\tEnd: %p - Size: %lu\n", functions[i].num, functions[i].begin, functions[i].end, functions[i].size);
 
-                                            if (functions[i].firstByte != 0x48 || functions[i].size < 100) continue;            // continue if not x64 code and filter out filler
+                                            //if (functions[i].firstByte != 0x48 || functions[i].size < 100) continue;            // continue if not x64 code and filter out filler
 
                                             readRawAddr(hProcess, functions[i].begin, functions[i].size, i);
                                             
@@ -4490,7 +4492,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                     }
 
                                     // finish cfg graph
-                                    else if (mystrcmp(buff, "!excaliber") == 0) {
+                                    else if (mystrcmp(buff, "!excalibur") == 0) {
                                         
                                         for (int i=0; i < funcCount; i++) {
 
@@ -4813,9 +4815,41 @@ BOOL WINAPI debug(LPCVOID param) {
                                             Editor(hProcess);
                                         }
 
-                                        else if (mystrcmp(buff, "!jmp") == 0) {
+                                        else if (mystrcmp(buff, "!jmp") == 0 || mystrcmp(buff, "!hot") == 0) {
+                                            
+                                            int getHotzones = 0;
+                                            if (mystrcmp(buff, "!hot") == 0) {
+                                                getHotzones = 1;
+                                            }
+                                            
                                             int askUserTracker = 0;
+                                            typedef struct {
+                                                int numOfTimesCalled;
+                                                uint64_t address;
+                                            } addrTimesCalled;
+
+                                            addrTimesCalled* Times = malloc(addrTracker * sizeof(addrTimesCalled));
+
+                                            for (int j=0; j < addrTracker; j++) {
+                                                Times[j].address = 0;
+                                                Times[j].numOfTimesCalled = 0;
+                                            }
+
                                             for (int i=0; i < addrTracker; i++) {
+
+                                                int numOfTimesCalled = 0;
+                                                for (int s=0; s < addrTracker; s++) {
+                                                    if (Times[s].address == direction[i].resolved) {
+                                                        Times[s].numOfTimesCalled++;
+                                                        break; 
+                                                    }
+                                                    if (Times[s].address == 0) {
+                                                        Times[s].address = direction[i].resolved;
+                                                        break;
+                                                    }
+                                                }
+                                                
+                                                if (getHotzones == 0) {
                                                 if (direction[i].type == 1) {
                                                 printf("[%lu] CALL 0x%p\tRVA: %lu\tTYPE: %lu\n", i, direction[i].addr, direction[i].rva, direction[i].type);
                                                 readRawAddr(hProcess, direction[i].addr, 5, 0);
@@ -4833,8 +4867,17 @@ BOOL WINAPI debug(LPCVOID param) {
                                                         continue;
                                                     }
                                                 }
+                                            }
+
                                                 askUserTracker++;
                                             }
+
+                                                for (int s=0; s < addrTracker; s++) {
+                                                if (Times[s].numOfTimesCalled != 0) {
+                                                    printf("0x%p called %lu times\n", Times[s].address, Times[s].numOfTimesCalled);
+
+                                                }
+                                                }
                                         }
                                        
                                         else {
