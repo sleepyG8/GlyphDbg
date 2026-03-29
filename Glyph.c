@@ -801,6 +801,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                     if (insn[i].mnemonic[0] == 'j') {
                     printf("\x1b[95m");
                     printf(" JMP: 0x%"PRIx64":\t%s\t%s\n", insn2[j].address, insn2[j].mnemonic, insn2[j].op_str, insn2[j].bytes);
+                    //disasm(hProcess, rawCall, 100, insn2[j].address, 0, 1);
                     } else {
                     printf("\x1b[92m");
                     printf(" CALL: 0x%"PRIx64":\t%s\t%s\n", insn2[j].address, insn2[j].mnemonic, insn2[j].op_str, insn2[j].bytes);
@@ -809,6 +810,8 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                     if (mystrcmp(insn2[j].mnemonic, "ret") == 0 || mystrcmp(insn2[j].mnemonic, "jmp") == 0) break;
                     }
                 }
+
+                cs_free(insn2, newCount);
                 // for (int p=0; p < 10; p++) {
                 //     if (lastCalled[p].address == 0) {
                 //         lastCalled[p].address = target;
@@ -1550,6 +1553,7 @@ int walkHeap(void* hProcess, void* heapAddr) {
     return 0;
 }
 
+int aggresive = 0;
 // Reading Raw address and parsing the data
 BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) {
 
@@ -1590,9 +1594,8 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) 
     
     printf("\n");
 
-    typedef BOOL (WINAPI* pCheckEntropy)(char* buff, size_t size);
-
     //Entropy Check
+    typedef BOOL (WINAPI* pCheckEntropy)(char* buff, size_t size);
     HANDLE hEdll = LoadLibrary("entropyCheck.dll");
     if (hEdll) {
     fillPack("EntropyCheck", 0, hEdll);
@@ -1616,6 +1619,18 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) 
     printf("\n\x1b[92m[+]\x1b[0m Memory Protections: [PAGE_EXECUTE]\n");
     } else if (memoryInfo == 128) {
     printf("\n\x1b[92m[+]\x1b[0m Memory Protections: [PAGE_EXECUTE_WRITECOPY]\n");
+    }
+
+    for (int i=0; i < 10; i++) {
+        if (codeRegions->codeBounds[i].start == 0) break;
+        if (base <= codeRegions->codeBounds[i].end && base >= codeRegions->codeBounds[i].start) {
+            printf("\n\x1b[92m[+]\x1b[0m Section: [%s]\n", codeRegions->codeBounds[i].name);
+            // Dont disasm if .data
+            if (mystrcmp(codeRegions->codeBounds[i].name, ".data") == 0 && aggresive == 0) {
+                return 1;
+            }
+            break;
+        }
     }
 
     // capstone
@@ -2259,6 +2274,12 @@ IMAGE_SECTION_HEADER section;
 if (startUp == 1) {
     codeRegions = malloc(sizeof(Regions));
     codeRegions->codeBounds = malloc(10 * sizeof(CodeRegion));
+
+    for (int i=0; i < 10; i++) {
+        codeRegions->codeBounds[i].end = 0;
+        codeRegions->codeBounds[i].start = 0;
+        codeRegions->codeBounds[i].name[0] = 0;
+    }
 }
 
 //looping through
@@ -2347,9 +2368,13 @@ Threads* thread;
 
 // Get processes by name and return its ID 
 DWORD threadid; // Global
+int alrAllocatedThreadStruct = 0;
 DWORD GetProc(wchar_t* procName, DWORD procId) {
 
+    if (alrAllocatedThreadStruct == 0) {
     thread = malloc(256 * sizeof(Threads));
+    alrAllocatedThreadStruct = 1;
+    }
 
     HMODULE hNtDll = GetModuleHandle("ntdll.dll");
 
@@ -2397,8 +2422,9 @@ DWORD GetProc(wchar_t* procName, DWORD procId) {
         thread[info->NumberOfThreads+1].state = 999;        // Delimiter 
 
         threadid = threads[0].ClientId.UniqueThread;
-        printf("%lu\n", info->UniqueProcessId);
-        return info->UniqueProcessId;
+        //printf("%lu\n", info->UniqueProcessId);
+        uint64_t returnID = info->UniqueProcessId;
+        return returnID;
     }
 
     //// If need thread Id from procID
@@ -2419,7 +2445,6 @@ DWORD GetProc(wchar_t* procName, DWORD procId) {
 
         threadid = threads[0].ClientId.UniqueThread;
         //threadid = threads[info->NumberOfThreads - (info->NumberOfThreads - 1)].ClientId.UniqueThread;
-        
         return 0;
     }
 }
@@ -3733,6 +3758,12 @@ int Editor(void* hProcess) {
 
 }
 
+int procCheck(wchar_t* procName, long procId) {
+    long id = GetProc(procName, 0);
+    if (id == procId) return 0;
+    return 1;
+}
+
 typedef struct {
     uint64_t addr;
     int rva;
@@ -3963,7 +3994,18 @@ BOOL WINAPI debug(LPCVOID param) {
                             if (cmdPacksStartup = 1 && cmdMod){
                                 loadCmdPack(buff, 0, 0);
                             }
-                                                                       
+                            
+                            //Check if its up and running still
+                            // if (procCheck(secondParam, pi.dwProcessId) == 1) {
+                            //     if (process[0] != 'C') {
+                            //     writeCon("Process has been killed by external force\n");
+                            //     pNtTerminateProcess NtTerminateProcess = (pNtTerminateProcess)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtTerminateProcess");
+                            //     if (!NtTerminateProcess) return FALSE;
+                            //     NTSTATUS status = NtTerminateProcess(NULL, 0);
+                            //     return 0;
+                            //     }
+                            // }
+
                             if ((unsigned char*)buff[0] != 00) {
                                         
                                 if (mystrcmp(buff, "!reg") == 0) {
@@ -4762,7 +4804,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             printThreadInfo(getReg, NOTHREADNUM);
                                             continue;
                                         }
-
+                                        // Breakpoints
                                         else if (mystrcmp(buff, "!bp") == 0) {  
                                             HANDLE hFile = CreateFileA("break.dll", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
                                             if (!hFile) {
@@ -4795,7 +4837,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             }
                                             continue;
                                         }
-                                       
+                                        // Swap threads
                                         else if (mystrcmp(buff, "!swap") == 0) {
                                             writeCon("Which Thread number to swap too?\n");
                                             char swapBuff[32];
@@ -4810,11 +4852,11 @@ BOOL WINAPI debug(LPCVOID param) {
                                             getThreads(threadId);
                                             writeCon("Swapped thread and dumped registers\n");
                                         }
-
+                                        // assembler and text editor
                                         else if (mystrcmp(buff, "!edit") == 0) {
                                             Editor(hProcess);
                                         }
-
+                                        // Building cfg
                                         else if (mystrcmp(buff, "!jmp") == 0 || mystrcmp(buff, "!hot") == 0) {
                                             
                                             int getHotzones = 0;
@@ -4879,7 +4921,13 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 }
                                                 }
                                         }
-                                       
+                                        // Set aggresive scanning for things like .data
+                                        else if (mystrcmp(buff, "!grr") == 0) {
+                                            aggresive ^= 1; // Flip each time
+                                            if (aggresive == 0) { writeCon("Aggresive Scanning Off...\n"); }
+                                            if (aggresive == 1) { writeCon("Aggresive Scanning On...\n");  }
+                                        }
+                                        
                                         else {
                                             writeCon("Wrong command\n");
                                         }
