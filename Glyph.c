@@ -646,6 +646,7 @@ int numOfFunction = 0;
 // } Last;
 // Last lastCalled[10] = {0, 0, 0, 0, 0, 0, 0, 0};
 
+int insideJmp = 0;
 // Capstone disasm
 BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int funcNum, int tillRET) {
     csh handle;
@@ -794,7 +795,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                     break;
                 }
 
-                int newCount = cs_disasm(handle, bytes, 999, target, 0, &insn2);
+                int newCount = cs_disasm(handle, bytes, sizeof(rawCall), target, 0, &insn2);
 
                 if (newCount > 0) {
                     for (int j=0; j < newCount; j++) {
@@ -802,6 +803,11 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                     printf("\x1b[95m");
                     printf(" JMP: 0x%"PRIx64":\t%s\t%s\n", insn2[j].address, insn2[j].mnemonic, insn2[j].op_str, insn2[j].bytes);
                     //disasm(hProcess, rawCall, 100, insn2[j].address, 0, 1);
+                    // insideJmp ^= 1;
+                    // if (insideJmp == 1) {
+                    // disasm(hProcess, rawCall, 999, insn2[j].address, 0, 1);
+                    // return 0;
+                    // }
                     } else {
                     printf("\x1b[92m");
                     printf(" CALL: 0x%"PRIx64":\t%s\t%s\n", insn2[j].address, insn2[j].mnemonic, insn2[j].op_str, insn2[j].bytes);
@@ -3834,6 +3840,25 @@ int findJmp(void* hProcess, unsigned char* codeStart, int Size) {
     return 0;
 }
 
+int stackWalk(void* hProcess, unsigned char* rsp) {
+
+    char buff[0x1000];
+    ReadProcessMemory(hProcess, rsp, &buff, sizeof(buff), NULL);
+
+    for (int i=0; i < sizeof(buff) / 8; i+=8) {
+        printf("[%lu] 0x%p", i, *(void**)((unsigned char*)buff + i));
+        printf("\n");
+    }
+
+    for (int i=0; i < sizeof(buff); i++) {
+        printf("%02X ", ((unsigned char*)buff)[i]);
+    }
+    printf("\n");
+
+
+    return 0;
+}
+
 wchar_t* secondParam = NULL; // argv[2]
 wchar_t* dllChoice; // Only for DLLs
 
@@ -4928,6 +4953,28 @@ BOOL WINAPI debug(LPCVOID param) {
                                             if (aggresive == 1) { writeCon("Aggresive Scanning On...\n");  }
                                         }
                                         
+                                        else if (mystrcmp(buff, "!sw") == 0) {
+                                            
+                                            void* hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, threadId);
+                                            if (hThread == NULL) {
+                                                printf("Error: Unable to open thread. %lu\n", GetLastError());
+                                                return TRUE;
+                                            }
+
+                                            SuspendThread(hThread);
+
+                                            CONTEXT stackcon;
+                                            stackcon.ContextFlags = CONTEXT_FULL | CONTEXT_AMD64;
+                                                
+                                            if (!GetThreadContext(hThread, &stackcon)) {
+                                                printf("Error getting context %lu\n", GetLastError());
+                                                continue;
+                                            }
+
+                                            ResumeThread(hThread);
+
+                                            stackWalk(hProcess, stackcon.Rsp);
+                                        }
                                         else {
                                             writeCon("Wrong command\n");
                                         }
