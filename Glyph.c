@@ -1238,7 +1238,7 @@ while (TRUE) {
 importDescAddr += sizeof(IMAGE_IMPORT_DESCRIPTOR);
 }
 
-return 1;
+return 0;
 }
 
 typedef struct {
@@ -1808,11 +1808,16 @@ BOOL getThreads(DWORD *threadId) {
 MYPEB pbi;
 WCHAR dllName[MAX_PATH] = {0};
 
+int isStartup = 0;
 // Peb :)
 BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWORD id) {
     
     // wow this fixed a lot, the list wasnt populated / moved this before PEB
-    WaitForInputIdle(hProcess, INFINITE);
+    // wait for peb to load for new process only
+
+    if (isStartup == 1) {
+    Sleep(500);
+    }
 
     HMODULE hNtDll = GetModuleHandle("ntdll.dll");
     if (!hNtDll) {
@@ -1900,12 +1905,12 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
         DWORD bytes;
         MY_LDR_DATA_TABLE_ENTRY ldrEntry = {0};
         if (!ReadProcessMemory(hProcess, currentEntry, &ldrEntry, sizeof(MY_LDR_DATA_TABLE_ENTRY), &bytes)) {
-            return FALSE;
+            return 1;
         }
 
         WCHAR name[MAX_PATH] = {0};
         if (!ReadProcessMemory(hProcess, ldrEntry.FullDllName.Buffer, &name, ldrEntry.FullDllName.Length, NULL)) {
-            return FALSE;
+            return 1;
         }
 
         // Setting Global struct
@@ -1928,7 +1933,7 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
         currentEntry = ldrEntry.InLoadOrderLinks.Flink;
        
     }
-        return TRUE;
+        return 1;
     
     }
 
@@ -3235,7 +3240,11 @@ BOOL printHelp() {
 
     writeCon("!jmp      - Get all calls and jumps\n");
 
-    writeCon("!hot       - Get HOT addresses\n");
+    writeCon("!sw       - Walk the current threads stack\n");
+
+    writeCon("!pointers - Dump all pointers from .data\n");
+
+    writeCon("!hot      - Get HOT addresses\n");
     
     writeCon("!mbi      - Get MBI info (only for unprotected processes)\n");
     
@@ -3846,16 +3855,58 @@ int stackWalk(void* hProcess, unsigned char* rsp) {
     ReadProcessMemory(hProcess, rsp, &buff, sizeof(buff), NULL);
 
     for (int i=0; i < sizeof(buff) / 8; i+=8) {
-        printf("[%lu] 0x%p", i, *(void**)((unsigned char*)buff + i));
-        printf("\n");
+        if ((*(void**)((unsigned char*)buff + i)) == 00) continue;
+        int sectionFound = 0;
+        for (int j=0; j < 10; j++) {
+        if ((*(void**)((unsigned char*)buff + i)) <= codeRegions->codeBounds[j].end && (*(void**)((unsigned char*)buff + i)) >= codeRegions->codeBounds[j].start) {
+            printf("[%lu] 0x%p - Section: %s\n", i, *(void**)((unsigned char*)buff + i), codeRegions->codeBounds[j].name);
+            if (mystrcmp(codeRegions->codeBounds[j].name, ".text") == 0 && aggresive == 1) {
+                readRawAddr(hProcess, *(void**)((unsigned char*)buff + i), 25, 0);
+            }
+            sectionFound ^= 1;
+            break;
+        } 
+        }
+        if (sectionFound == 0) {
+            printf("[%lu] 0x%p\n", i, *(void**)((unsigned char*)buff + i));      
+        }
     }
 
+    if (aggresive == 1) {
     for (int i=0; i < sizeof(buff); i++) {
         printf("%02X ", ((unsigned char*)buff)[i]);
     }
     printf("\n");
+    } else {
+        writeCon("Use !grr command to dump raw stack\n");
+    }
 
+    return 0;
+}
 
+typedef struct {
+    uint64_t addr;
+    char nameOfSection[32];
+} POINTERS;
+POINTERS* point;
+
+int getDataPointers(void* hProcess, unsigned char* data, int Size) {
+    
+    point = malloc((Size / 8) * sizeof(POINTERS));
+    unsigned char* buff = malloc(Size); 
+    ReadProcessMemory(hProcess, data, buff, Size, 0);
+
+    for (int i=0; i < Size / 8; i+=8) {
+        if ((*(void**)((unsigned char*)buff + i)) == 00) continue;
+        for (int j=0; j < 10; j++) {
+        if ((*(void**)((unsigned char*)buff + i)) <= codeRegions->codeBounds[j].end && (*(void**)((unsigned char*)buff + i)) >= codeRegions->codeBounds[j].start) {
+            point[i].addr = *(void**)((unsigned char*)buff + i);
+            strcpy(point[i].nameOfSection, codeRegions->codeBounds[j].name);
+            break;
+        } 
+        }
+
+    }
     return 0;
 }
 
@@ -3892,7 +3943,7 @@ BOOL WINAPI debug(LPCVOID param) {
         printf("Error Wrong Process Name\n");
         }
 
-    } else if (wcscmp(process, L"-id") == 0) {
+    } else if (wcscmp(process, L"-id") == 0) {  // Connect
         pi.dwProcessId = wcstol(secondParam, NULL, 10);
         printf("%lu\n", pi.dwProcessId);
         GetProc(NULL, pi.dwProcessId);
@@ -3901,8 +3952,9 @@ BOOL WINAPI debug(LPCVOID param) {
         
         wprintf(L"\x1b[92m[+]\x1b[0m \033[35mDebugging %s:\033[0m\n", secondParam);
 
-       } else {
-        // START process stuff
+       } else { // START process stuff
+        // Notify Peb walk to stall for peb to be filled by the kernel
+        isStartup = 1;
         if (CreateProcessW(process, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
         wprintf(L"\x1b[92m[+]\x1b[0m \033[35mDebugging %ws:\033[0m\n", param);
         } else {
@@ -3932,12 +3984,9 @@ BOOL WINAPI debug(LPCVOID param) {
             getThreads(threadId);
 
             // Getting PEB / Startup info
-            GetPEBFromAnotherProcess(hProcess, pi.dwThreadId, pi.dwProcessId);
-
             // Loading the Import struct
-            // if import read fails, notify user. Sometimes this fails because of handle perms only when creating a process.
             // I needed this to gracefully exit on bad reads
-            if (getRemoteImports(hProcess, NULL, 0, 0) != 0) {
+            if (GetPEBFromAnotherProcess(hProcess, pi.dwThreadId, pi.dwProcessId) == 1 && getRemoteImports(hProcess, NULL, 0, 0) == 0) {
 
             // Getting function boundaries
             getExceptionDir(hProcess, 0);
@@ -3948,6 +3997,14 @@ BOOL WINAPI debug(LPCVOID param) {
             // finding all calls/jmps
             int Size = (unsigned char*)codeRegions->codeBounds[0].end - (unsigned char*)codeRegions->codeBounds[0].start;
             findJmp(hProcess, codeRegions->codeBounds[0].start, Size);
+
+            // Getting pointers from .data
+            for (int i=0; i < 10; i++) {
+            if (mystrcmp(codeRegions->codeBounds[i].name, ".data") == 0) {
+                int Size = (unsigned char*)codeRegions->codeBounds[i].end - codeRegions->codeBounds[i].start;
+                getDataPointers(hProcess, codeRegions->codeBounds[i].start, Size);
+                }
+            }
 
             } else {
                 printf("Reconnect with -c for all features.\n");
@@ -4953,6 +5010,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             if (aggresive == 1) { writeCon("Aggresive Scanning On...\n");  }
                                         }
                                         
+                                        // Stack walk
                                         else if (mystrcmp(buff, "!sw") == 0) {
                                             
                                             void* hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, threadId);
@@ -4975,6 +5033,23 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             stackWalk(hProcess, stackcon.Rsp);
                                         }
+                                        
+                                        else if (mystrcmp(buff, "!pointers") == 0) {
+                                                for (int i=0; i < 10; i++) {
+                                                if (mystrcmp(codeRegions->codeBounds[i].name, ".data") == 0) {
+                                                    int Size = (unsigned char*)codeRegions->codeBounds[i].end - codeRegions->codeBounds[i].start;
+                                                    for (int j=0; j < Size / 8; j++) {
+                                                        if (point[j].addr != 0) {
+                                                            printf("[%lu] 0x%p - Section: %s\n", j, point[j].addr, point[j].nameOfSection);
+                                                            if (mystrcmp(point[j].nameOfSection, ".text") == 0 && aggresive == 1) {
+                                                                readRawAddr(hProcess, point[j].addr, 25, 0);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                }
+                                        }
+                                        
                                         else {
                                             writeCon("Wrong command\n");
                                         }
