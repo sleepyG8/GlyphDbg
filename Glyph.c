@@ -4609,7 +4609,22 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 lastFunction->size = functions[i].size;
                                                 writeCon("Created save point!\n");
                                                 break;
-                                            } else continue;
+                                            } else if (breakBuffer[0] = 'g') {
+                                                if (isdigit(breakBuffer[2])) {
+                                                    char number[32];
+                                                    for (int j=0; ;j++) {
+                                                        if (breakBuffer[1+j] == 0x00) break;
+                                                        number[j] = breakBuffer[1+j];
+                                                    }
+
+                                                    int finalNum = atoi(number);
+
+                                                    printf("Fast Travel to function # %lu\n", finalNum);
+
+                                                    i = finalNum;
+                                                    continue;
+                                                }
+                                            }else continue;
                                         
                                         }
 
