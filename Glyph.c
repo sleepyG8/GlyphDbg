@@ -7,6 +7,8 @@
 #include <iphlpapi.h>
 #include "capstone/capstone.h"
 #include "intrin.h"
+#include <immintrin.h>
+
 
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004)
@@ -3926,21 +3928,36 @@ void* findPacked(void* hProcess, unsigned char* code, int size) {
         sus[i].type = 0x00;
     }
 
-
     unsigned char* buffer = malloc(size);
 
     ReadProcessMemory(hProcess, (void*)code, buffer, size, 0);
 
     int numberOfsus = 0;
-
+    int howFarIn = 0;
     for (int i=0; i < size; i++) {
 
-        if (buffer[i] != 0x48) {
+    __m512i zmm = _mm512_load_si512(buffer+i);
+    __m512i zmm2 = _mm512_load_si512(buffer+i+64); // Nice double pump
+
+    // uint8_t out[128];
+    // _mm512_store_si512((__m512i*)out, zmm);
+    // _mm512_store_si512((__m512i*)out+64, zmm2); // storing zmm
+
+    __m512i bytecmp = _mm512_set1_epi8(0x48);
+
+    __mmask64  res = _mm512_cmpeq_epi8_mask(zmm, bytecmp);
+    __mmask64  res2 = _mm512_cmpeq_epi8_mask(zmm2, bytecmp);
+    i+=128;
+    if (res2 || res) continue;
+
+
+    if (buffer[i] != 0x48) {
     
-            for (int j=0; j < 500; j++) {
+        for (int j=0; j < 500; j++) {
 
                 if (code + i + 500 > code + size) {
                     free(buffer);
+                    if (numberOfsus > 0) return 1;
                     return 0;
                 }
 
@@ -3950,7 +3967,6 @@ void* findPacked(void* hProcess, unsigned char* code, int size) {
 
                 if (j == 499) {
                 i+=j;
-                if (numberOfsus == 499) return 0;
                 sus[numberOfsus++].address = code + i + j;
                 }
             }
@@ -3959,6 +3975,10 @@ void* findPacked(void* hProcess, unsigned char* code, int size) {
     }
 
     free(buffer);
+    if (numberOfsus > 0) {
+        return 1;
+    }
+
     return 0;
 }
 
@@ -5120,7 +5140,11 @@ BOOL WINAPI debug(LPCVOID param) {
                                         else if (mystrcmp(buff, "!packed") == 0) {
                                             int size = (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start;
                                             
-                                            findPacked(hProcess, codeRegions->codeBounds[0].start, size);
+                                            int res = findPacked(hProcess, codeRegions->codeBounds[0].start, size);
+                                            if (res == 0) {
+                                                writeCon("No packed regions found\n");
+                                                continue;
+                                            }
                                             
                                             
                                             for (int i=0; i < 500; i++) {
