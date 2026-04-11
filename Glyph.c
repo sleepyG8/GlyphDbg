@@ -3910,6 +3910,58 @@ int getDataPointers(void* hProcess, unsigned char* data, int Size) {
     return 0;
 }
 
+typedef struct {
+    void* address;
+    unsigned char type;
+} SusRegions;
+
+SusRegions* sus; 
+
+void* findPacked(void* hProcess, unsigned char* code, int size) {
+
+    sus = malloc(500 * sizeof(SusRegions));
+
+    for (int i=0; i < 500; i++) {
+        sus[i].address = 0;
+        sus[i].type = 0x00;
+    }
+
+
+    unsigned char* buffer = malloc(size);
+
+    ReadProcessMemory(hProcess, (void*)code, buffer, size, 0);
+
+    int numberOfsus = 0;
+
+    for (int i=0; i < size; i++) {
+
+        if (buffer[i] != 0x48) {
+    
+            for (int j=0; j < 500; j++) {
+
+                if (code + i + 500 > code + size) {
+                    free(buffer);
+                    return 0;
+                }
+
+                if (buffer[i+j] == 0x48 || buffer[i+j] == 0xE8 || buffer[i+j] == 0xE9 || buffer[i+j] == 0xC3 || buffer[i+j] == 0x0F && buffer[i+j+1] == 0x38) {
+                    break;
+                }
+
+                if (j == 499) {
+                i+=j;
+                if (numberOfsus == 499) return 0;
+                sus[numberOfsus++].address = code + i + j;
+                }
+            }
+        }
+
+    }
+
+    free(buffer);
+    return 0;
+}
+
 wchar_t* secondParam = NULL; // argv[2]
 wchar_t* dllChoice; // Only for DLLs
 
@@ -4621,7 +4673,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                                     printf("Fast Travel to function # %lu\n", finalNum);
 
-                                                    i = finalNum;
+                                                    i = finalNum - 1;
                                                     continue;
                                                 }
                                             }else continue;
@@ -5065,6 +5117,19 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 }
                                         }
                                         
+                                        else if (mystrcmp(buff, "!packed") == 0) {
+                                            int size = (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start;
+                                            
+                                            findPacked(hProcess, codeRegions->codeBounds[0].start, size);
+                                            
+                                            
+                                            for (int i=0; i < 500; i++) {
+                                                if (sus[i].address == 0) break;
+                                                printf("found suspicous region at 0x%p\n", sus[i].address);
+
+                                            }
+                                        }
+
                                         else {
                                             writeCon("Wrong command\n");
                                         }
