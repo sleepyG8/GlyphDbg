@@ -3816,6 +3816,7 @@ int findJmp(void* hProcess, unsigned char* codeStart, int Size) {
     }
     
     for (int i=0; i < Size; i++) {
+        if (addrTracker >= tracker) break;
         if (buff[i] != 0xE8 && buff[i] != 0xE9) continue;
         if (buff[i+6] == 0x48 || buff[i+5] == 0x48) {
         } else continue;
@@ -3833,7 +3834,7 @@ int findJmp(void* hProcess, unsigned char* codeStart, int Size) {
 
         // Check for last byte 00 or 0xFF and skip if not
         if (buff[i+4] != 0x00 && buff[i+4] != 0xFF) {
-            tracker--;  // move tracker down and dont advance addrTracker
+            tracker--;
             continue;
         }
 
@@ -3842,7 +3843,7 @@ int findJmp(void* hProcess, unsigned char* codeStart, int Size) {
         //if (direction[addrTracker].resolved >= codeRegions->codeBounds[0].start && direction[addrTracker].resolved <= codeRegions->codeBounds[0].end) {
         direction[addrTracker].resolved = (uint64_t)(nextRip + disp);
         //}
-        
+
         addrTracker++;
         if (addrTracker == tracker) break;
 
@@ -3991,6 +3992,42 @@ typedef struct lastDisasm {
 } lastDisasm;
 
 lastDisasm* lastFunction = NULL;
+
+typedef struct SEND {
+        UINT64 address;
+        HANDLE id;
+} SEND;
+
+#define IOCTL_MY_QUERY CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+int kernelRead(HANDLE procNum, void* address) {
+
+    HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        printf("Failed to open driver %u\n", GetLastError());
+        return 1;
+    }
+
+    SEND* send = malloc(1*sizeof(SEND));   
+
+    send->address = address;
+    send->id = procNum;
+
+    printf("in: 0x%p %p\n", (UINT64)send->address, send->id);
+    int ret = 0;
+    unsigned char out[500];
+    DeviceIoControl(h, IOCTL_MY_QUERY, send, sizeof(SEND), &out, sizeof(out), &ret, NULL);
+
+    for (int p=0; p < 500; p++) {
+        printf("%02X ", out[p]);
+    }
+
+    printf("Sent\n");
+    CloseHandle(h);
+    return 0;
+}
+
 
 char *breakBuff;
 int breakSet = 0;
@@ -5152,6 +5189,24 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 printf("found suspicous region at 0x%p\n", sus[i].address);
 
                                             }
+                                        }
+
+                                        else if (mystrcmp(buff, "!kd") == 0) {
+                                            
+                                            writeCon("Which address to read?\n");
+                                            char addrBuff[64];
+                                            fgets(addrBuff, sizeof(addrBuff), stdin);
+                                            addrBuff[strcspn(addrBuff, "\n")] = '\0';
+
+                                            ULONGLONG addr = 0;
+                                            if (sscanf(addrBuff, "%llx", &addr) != 1 || addr == 0) {
+                                            printf("Error: invalid address '%s'\n", addrBuff);
+                                            return 0;
+                                            }
+
+                                            printf("address: 0x%p\n", addr);
+                                            kernelRead(pi.dwProcessId, addr);
+
                                         }
 
                                         else {
