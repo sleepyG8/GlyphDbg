@@ -22,14 +22,37 @@
 
 CONTEXT context;
 
-    // int seDebug;
-    // int pebPatch;
-    // int tebCheck;
-    // int Notes;
-    // int entropyCheck;
-    // int reserved;       // For future use and adding new packs
-    // int reserved2;
-    // int reserved3;
+typedef struct SEND {
+        UINT64 address;
+        HANDLE id;
+        SIZE_T size;
+} SEND;
+
+#define IOCTL_MY_QUERY CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+int kernelRead(HANDLE procNum, void* address, SIZE_T size, unsigned char* out) {
+
+    HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        printf("Failed to open driver %u\n", GetLastError());
+        return 1;
+    }
+
+    SEND* send = malloc(1*sizeof(SEND));   
+
+    send->address = address;
+    send->id = procNum;
+    send->size = size;
+
+    //printf("in: 0x%p %p %lu\n", (UINT64)send->address, send->id, send->size);
+
+    int ret = 0;
+    DeviceIoControl(h, IOCTL_MY_QUERY, send, sizeof(SEND), out, send->size, &ret, NULL);
+
+    CloseHandle(h);
+    return 0;
+}
 
 typedef struct {
     int isActive;
@@ -1505,7 +1528,7 @@ int findRX(HANDLE hProcess, unsigned char* base) {
             printf("%02X\n", firstBytes[j]);
             printf("ret found at %p\n", base + j);
             printf("Function Size: %lu\n", j);
-            readRawAddr(hProcess, base + j, j, 0);
+            readRawAddr(hProcess, base + j, j, 0, 0);
 
             if (endWalk() == 1) return 0;
 
@@ -1563,7 +1586,7 @@ int walkHeap(void* hProcess, void* heapAddr) {
 
 int aggresive = 0;
 // Reading Raw address and parsing the data
-BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) {
+BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum, DWORD id) {
 
     if (bytesToRead > 0x1000) return 0;
     
@@ -1576,17 +1599,29 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) 
         return 2;
     }
 
-    // Read memory
+
     DWORD bytesRead = 0;
+
+    if (id != 0) {
+        writeCon("Dumping using the kernel...\n");
+        unsigned char kernOut[0x1000];
+        kernelRead(id, base, sizeof(kernOut), &kernOut);
+
+        __movsb(buff, kernOut, bytesToRead);
+
+
+    } else {
+    // Read memory
     if (ReadProcessMemory(hProcess, base, &buff, bytesToRead, &bytesRead)) {
         printf("\x1b[92m[!]\x1b[0m Read Memory - Base: %p\n", base);
     } else {
         printf("\x1b[92m[!]\x1b[0m Read partial memory - Region base: %p\n", base);
     }
+    }
     
     // Print 100 raw memory bytes
     printf("\x1b[92m[+]\x1b[0m Chars:\n");
-    for (SIZE_T i = 0; i < bytesRead; i++) {
+    for (SIZE_T i = 0; i < bytesToRead; i++) {
         if (isprint(buff[i])) {  // Very useful to print only valid chars
         printf("%c ", buff[i]);;
         //if ((i +1) % 12 == 0) printf("\n");
@@ -1595,7 +1630,7 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum) 
     printf("\n");
 
     printf("\x1b[92m[+]\x1b[0m Raw: \n");
-    for (SIZE_T i = 0; i < bytesRead; i++) {
+    for (SIZE_T i = 0; i < bytesToRead; i++) {
     printf("%02X ", buff[i]);   
     if ((i +1) % 12 == 0) printf("\n");     
     }
@@ -3414,7 +3449,7 @@ while (1) {
         if (strncmp(clipData, "0x", 2) == 0 && mystrlen(clipData) < 50) {
         
             printf("Printing from clipboard...\n");
-            readRawAddr(lpParam, addr, 20, 0);
+            readRawAddr(lpParam, addr, 20, 0, 0);
         
         }
                                          
@@ -3864,7 +3899,7 @@ int stackWalk(void* hProcess, unsigned char* rsp) {
         if ((*(void**)((unsigned char*)buff + i)) <= codeRegions->codeBounds[j].end && (*(void**)((unsigned char*)buff + i)) >= codeRegions->codeBounds[j].start) {
             printf("[%lu] 0x%p - Section: %s\n", i, *(void**)((unsigned char*)buff + i), codeRegions->codeBounds[j].name);
             if (mystrcmp(codeRegions->codeBounds[j].name, ".text") == 0 && aggresive == 1) {
-                readRawAddr(hProcess, *(void**)((unsigned char*)buff + i), 25, 0);
+                readRawAddr(hProcess, *(void**)((unsigned char*)buff + i), 25, 0, 0);
             }
             sectionFound ^= 1;
             break;
@@ -3992,42 +4027,6 @@ typedef struct lastDisasm {
 } lastDisasm;
 
 lastDisasm* lastFunction = NULL;
-
-typedef struct SEND {
-        UINT64 address;
-        HANDLE id;
-} SEND;
-
-#define IOCTL_MY_QUERY CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
-
-int kernelRead(HANDLE procNum, void* address) {
-
-    HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-
-    if (h == INVALID_HANDLE_VALUE) {
-        printf("Failed to open driver %u\n", GetLastError());
-        return 1;
-    }
-
-    SEND* send = malloc(1*sizeof(SEND));   
-
-    send->address = address;
-    send->id = procNum;
-
-    printf("in: 0x%p %p\n", (UINT64)send->address, send->id);
-    int ret = 0;
-    unsigned char out[500];
-    DeviceIoControl(h, IOCTL_MY_QUERY, send, sizeof(SEND), &out, sizeof(out), &ret, NULL);
-
-    for (int p=0; p < 500; p++) {
-        printf("%02X ", out[p]);
-    }
-
-    printf("Sent\n");
-    CloseHandle(h);
-    return 0;
-}
-
 
 char *breakBuff;
 int breakSet = 0;
@@ -4361,7 +4360,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         DWORD bytesNum = strtoul(bytes2Read, NULL, 10);
 
                                         // Read Raw function 
-                                        if (!readRawAddr(hProcess, (LPVOID)addr, bytesNum, 0)) {
+                                        if (!readRawAddr(hProcess, (LPVOID)addr, bytesNum, 0, 0)) {
                                         printf("Error invalid address\n");
                                         }
                                         
@@ -4701,7 +4700,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             //if (functions[i].firstByte != 0x48 || functions[i].size < 100) continue;            // continue if not x64 code and filter out filler
 
-                                            readRawAddr(hProcess, functions[i].begin, functions[i].size, i);
+                                            readRawAddr(hProcess, functions[i].begin, functions[i].size, i, 0);
                                             
                                             printf("\x1b[92m[+]\x1b[0m Functions called: %lu\n\x1b[92m[?]\x1b[0m[%lu] <Enter> Move Forward\t<-> Move Back\t<q> End\n", numOfFunction, functions[i].num);
 
@@ -4745,7 +4744,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         for (int i=0; i < funcCount; i++) {
 
                                             if (functions[i].begin == peb.Entry) {
-                                                readRawAddr(hProcess, functions[i].begin, 999, i);
+                                                readRawAddr(hProcess, functions[i].begin, 999, i, 0);
                                             }                                        
                                         }
                                     
@@ -4779,7 +4778,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             void* new = addressMath(addr, 50);
 
-                                            readRawAddr(hProcess, new, 50, 0);
+                                            readRawAddr(hProcess, new, 50, 0, 0);
                                             continue;
 
                                         }
@@ -4895,7 +4894,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             }
 
                                             printf("\033[31m[+]\033[0m DUMP at 0x%p:\n", address);
-                                            readRawAddr(hProcess, address, 20, 0);
+                                            readRawAddr(hProcess, address, 20, 0, 0);
                                             continue;
                                         }
 
@@ -5088,6 +5087,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 int numOfTimesCalled = 0;
                                                 for (int s=0; s < addrTracker; s++) {
                                                     if (Times[s].address == direction[i].resolved) {
+                                                        //printf("0x%p Tracker: %lu of %lu\n", Times[s].address, s, addrTracker);
                                                         Times[s].numOfTimesCalled++;
                                                         break; 
                                                     }
@@ -5100,10 +5100,10 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 if (getHotzones == 0) {
                                                 if (direction[i].type == 1) {
                                                 printf("[%lu] CALL 0x%p\tRVA: %lu\tTYPE: %lu\n", i, direction[i].addr, direction[i].rva, direction[i].type);
-                                                readRawAddr(hProcess, direction[i].addr, 5, 0);
+                                                readRawAddr(hProcess, direction[i].addr, 5, 0, 0);
                                                 } else if (direction[i].type == 2) {
                                                 printf("[%lu] JMP 0x%p\tRVA: %lu\tTYPE: %lu\n", i, direction[i].addr, direction[i].rva, direction[i].type);
-                                                readRawAddr(hProcess, direction[i].addr, 5, 0);
+                                                readRawAddr(hProcess, direction[i].addr, 5, 0, 0);
                                                 } else if (direction[i].type == 3) break;
 
                                                 if (askUserTracker == 10) {
@@ -5166,7 +5166,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                                         if (point[j].addr != 0) {
                                                             printf("[%lu] 0x%p - Section: %s\n", j, point[j].addr, point[j].nameOfSection);
                                                             if (mystrcmp(point[j].nameOfSection, ".text") == 0 && aggresive == 1) {
-                                                                readRawAddr(hProcess, point[j].addr, 25, 0);
+                                                                readRawAddr(hProcess, point[j].addr, 25, 0, 0);
                                                             }
                                                         }
                                                     }
@@ -5191,7 +5191,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             }
                                         }
 
-                                        else if (mystrcmp(buff, "!kd") == 0) {
+                                        else if (mystrcmp(buff, "!kdump") == 0) {
                                             
                                             writeCon("Which address to read?\n");
                                             char addrBuff[64];
@@ -5204,8 +5204,16 @@ BOOL WINAPI debug(LPCVOID param) {
                                             return 0;
                                             }
 
-                                            printf("address: 0x%p\n", addr);
-                                            kernelRead(pi.dwProcessId, addr);
+                                            writeCon("How many bytes to dump?\n");
+                                            char numBuff[64];
+                                            fgets(numBuff, sizeof(numBuff), stdin);
+                                            numBuff[strcspn(numBuff, "\n")] = '\0';
+
+                                            SIZE_T size = atoi(numBuff);
+
+                                            printf("Size: %lu\n", size);
+
+                                            readRawAddr(hProcess, addr, size, 0, pi.dwProcessId);
 
                                         }
 
