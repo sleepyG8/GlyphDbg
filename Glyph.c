@@ -8,7 +8,7 @@
 #include "capstone/capstone.h"
 #include "intrin.h"
 #include <immintrin.h>
-
+//#include "starmusic.h"
 
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004)
@@ -30,7 +30,7 @@ typedef struct SEND {
 
 #define IOCTL_MY_QUERY CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
-int kernelRead(HANDLE procNum, void* address, SIZE_T size, unsigned char* out) {
+int kernelRead(HANDLE procNum, void* address, unsigned char* out, SIZE_T size) {
 
     HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
 
@@ -50,6 +50,7 @@ int kernelRead(HANDLE procNum, void* address, SIZE_T size, unsigned char* out) {
     int ret = 0;
     DeviceIoControl(h, IOCTL_MY_QUERY, send, sizeof(SEND), out, send->size, &ret, NULL);
 
+    free(send);
     CloseHandle(h);
     return 0;
 }
@@ -1591,7 +1592,6 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum, 
     if (bytesToRead > 0x1000) return 0;
     
     BYTE buff[0x1000];
-    if (!buff) return FALSE;
 
     DWORD memoryInfo = getMBI(hProcess, base, 0);
     if (memoryInfo == 1) {
@@ -1605,7 +1605,9 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum, 
     if (id != 0) {
         writeCon("Dumping using the kernel...\n");
         unsigned char kernOut[0x1000];
-        kernelRead(id, base, sizeof(kernOut), &kernOut);
+        if (kernelRead(id, base, &kernOut, sizeof(kernOut)) == 1) {
+            return 1;
+        }
 
         __movsb(buff, kernOut, bytesToRead);
 
@@ -1877,7 +1879,7 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
     
     // storing global peb address
     peb.pebaddr = proc.PebBaseAddress;
-      
+
     MY_PEB_LDR_DATA ldrData;
     if (ReadProcessMemory(hProcess, proc.PebBaseAddress, &pbi, sizeof(pbi), NULL)) {
         printf("\n\x1b[92m[+]\x1b[0m process ID: %lu\n", (unsigned long)proc.UniqueProcessId);
@@ -1957,7 +1959,7 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
 
         // setting global ntdll
         if (wcsstr(name, L"ntdll.dll") != 0) {
-            printf("found ntdll\n");
+            //printf("found ntdll\n");
             ntdllBase = ldrEntry.DllBase;
         }
 
@@ -3373,6 +3375,8 @@ BOOL printHelp() {
 
     writeCon("start clip  - start clip disasm shortcut\n");
 
+    writeCon("?[Command]  - Get Info on a command\n");
+
     writeCon("0x????????  - Send an address and get info\n");
 
     writeCon("Extras: [!pebPatch] - patch glyphs peb\n");
@@ -3966,7 +3970,10 @@ void* findPacked(void* hProcess, unsigned char* code, int size) {
 
     unsigned char* buffer = malloc(size);
 
-    ReadProcessMemory(hProcess, (void*)code, buffer, size, 0);
+    if (!ReadProcessMemory(hProcess, (void*)code, buffer, size, 0)) {
+        printf("Error Reading Memory...\n");
+        return 0;
+    }
 
     int numberOfsus = 0;
     int howFarIn = 0;
@@ -4003,6 +4010,7 @@ void* findPacked(void* hProcess, unsigned char* code, int size) {
 
                 if (j == 499) {
                 i+=j;
+                printf("Found at 0x%p", code + i + j);
                 sus[numberOfsus++].address = code + i + j;
                 }
             }
@@ -4016,6 +4024,51 @@ void* findPacked(void* hProcess, unsigned char* code, int size) {
     }
 
     return 0;
+}
+
+typedef struct {
+    const char* name;
+    char help[128];
+} CommandName;
+
+static const CommandName COMMANDS[] = {{"reg", "[!] List startup registers"}, {"getreg", NULL}, {"bp", NULL}, {"write", NULL}, {"threads", NULL}, {"swap", NULL}, {"dump", NULL}, {"disasm", NULL}, {"rebuild", NULL}, {"sub", NULL}, {"func", NULL}, {"jmp", NULL}, {"sw", NULL}, {"pointers", NULL}, {"hot", NULL}, {"mbi", NULL}, {"bit", NULL}, {"var", NULL}, {"veh", NULL}, {"imports", NULL}, {"entry", NULL}, {"dllcheck", NULL}, {"dllexp", NULL}, {"wor", NULL}, {"hooked", NULL}, {"heap", NULL}, {"static", NULL}, {"rsrc", NULL}, {"net", NULL}, {"mz", NULL}, {"rx", NULL}, {"stubs", NULL}, {"proc", NULL}, {"cpu", NULL}, {"attr", NULL}, {"peb", NULL}, {"params", NULL}, {"gsi", NULL}, {"cfg", NULL}, {"sig", NULL}, {"pwr", NULL}, {"handles", NULL}, {"handlesEx", NULL}, {"vendor", NULL}, {"dll", NULL}, {"tcp", NULL}, {"clear", NULL}, {"exit", NULL}, {"kill", NULL}, {"help", NULL}, {"ext", NULL}, {"wsl", NULL}, {"cmd", NULL}, {"edit", NULL}, {"docs", NULL}, {"save", NULL}, {"packs", NULL}, {"unload", NULL}, {"start", NULL}, {"pebPatch"}};
+
+int getHelp(char* buff) {
+    for (int i=0; i < 60; i++) {
+        if (mystrcmp(COMMANDS[i].name, buff + 1) == 0) {
+            if (COMMANDS[i].help[0] == 00) {
+                printf("[!] Help entry not yet filled out\n");
+                return 0;
+            }
+            printf("%s\n", COMMANDS[i].help);
+        }
+
+    }
+}
+
+int checkMatch(char* buff) {
+    int len = mystrlen(buff);
+    for (int j=0; j < 60; j++) {
+        
+        int score = 0;
+        for (int p=0; p < mystrlen(COMMANDS[j].name);p++) {
+
+        if (COMMANDS[j].name[p] == 00) break;
+
+        for (int i=0; i < len; i++) {
+            if (buff[i] == 00) break;
+            if (COMMANDS[j].name[p] != buff[i]) continue;
+            score++;
+            
+            if (score >= 3) {
+                printf("Did you mean?:\n[!]!%s\n", COMMANDS[j].name);
+                getHelp(buff);
+            }
+
+        }
+        } 
+        }
+    return 1;
 }
 
 wchar_t* secondParam = NULL; // argv[2]
@@ -4197,6 +4250,11 @@ BOOL WINAPI debug(LPCVOID param) {
                             // }
 
                             if ((unsigned char*)buff[0] != 00) {
+
+                                if (buff[0] == '?') {
+                                    getHelp(buff);
+                                    continue;
+                                }
                                         
                                 if (mystrcmp(buff, "!reg") == 0) {
                                     printf("Process ID: %lu\n", pi.dwProcessId);
@@ -5131,7 +5189,12 @@ BOOL WINAPI debug(LPCVOID param) {
                                         else if (mystrcmp(buff, "!grr") == 0) {
                                             aggresive ^= 1; // Flip each time
                                             if (aggresive == 0) { writeCon("Aggresive Scanning Off...\n"); }
-                                            if (aggresive == 1) { writeCon("Aggresive Scanning On...\n");  }
+                                            if (aggresive == 1) { 
+                                                writeCon("Aggresive Scanning On...\n");
+                                                //PlaySoundA(&starmusic, NULL, SND_MEMORY | SND_ASYNC | SND_SYSTEM);
+
+                                            }
+
                                         }
                                         
                                         // Stack walk
@@ -5201,7 +5264,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             ULONGLONG addr = 0;
                                             if (sscanf(addrBuff, "%llx", &addr) != 1 || addr == 0) {
                                             printf("Error: invalid address '%s'\n", addrBuff);
-                                            return 0;
+                                            continue;
                                             }
 
                                             writeCon("How many bytes to dump?\n");
@@ -5211,13 +5274,14 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             SIZE_T size = atoi(numBuff);
 
-                                            printf("Size: %lu\n", size);
-
                                             readRawAddr(hProcess, addr, size, 0, pi.dwProcessId);
-
+                                            continue;
                                         }
 
+                                        
+
                                         else {
+                                            checkMatch(buff);
                                             writeCon("Wrong command\n");
                                         }
                                     
