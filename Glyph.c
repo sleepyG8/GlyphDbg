@@ -623,6 +623,22 @@ BYTE* readAlloc(BYTE* remoteMem, int startingOffset) {
 
 }
 
+int aggresive = 0;
+
+typedef struct {
+    char string[16];
+    int density;
+} avxKey;
+static const avxKey key[] = {{"xmm", 1}, {"zmm", 1}, {"ymm", 1}};
+int avxCheck(char* opstr) {
+    for (int i=0; i < 3; i++) {
+    if (strstr(opstr, key[i].string) != 0) {
+        return key[i].density;
+    }
+    }
+    return 0;
+}
+
 int readString(uint64_t bytes, char* out) {
     if ((bytes >> 64) == 00) return 1;
     for (int i=0; i < 8; i++) {
@@ -691,6 +707,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
         return -1;
     }
 
+    int avxDensity = 0;
     // Disassemble
     count = cs_disasm(handle, code, size, address, 0, &insn);
 
@@ -698,10 +715,17 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
 
         int numofInstructions = 0;
         for (size_t i = 0; i < count; i++) {
-                int printed = 0;
+            int printed = 0;
 
-                if (insn[i].bytes == 0xC3) break;
-                for (int k=0; k < countImport; k++) {
+            unsigned char avxBuff[5];
+            avxBuff[0] = insn[i].op_str[0];
+            avxBuff[1] = insn[i].op_str[1];
+            avxBuff[2] = insn[i].op_str[2];
+            avxBuff[3] = 00;
+            avxDensity += avxCheck(avxBuff);            
+
+            if (insn[i].bytes == 0xC3) break;
+            for (int k=0; k < countImport; k++) {
 
                     if (mystrstr(insn[i].op_str, "[rip +", 6) != NULL) {
 
@@ -873,6 +897,19 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
         return 0;
     }
 
+    if (aggresive == 1) {
+        writeCon("\n[!]Results:\n");
+        printf("AVX:");
+        for (int p=0; p < 32; p++) {
+            if (p <= avxDensity) {
+                printf("[+]");
+            } else {
+                printf("[ ]");
+            }
+        }
+        printf("\n");
+        
+    } 
     cs_free(insn, count);
     cs_close(&handle);
     return 0;
@@ -1585,7 +1622,6 @@ int walkHeap(void* hProcess, void* heapAddr) {
     return 0;
 }
 
-int aggresive = 0;
 // Reading Raw address and parsing the data
 BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum, DWORD id) {
 
@@ -4010,7 +4046,7 @@ void* findPacked(void* hProcess, unsigned char* code, int size) {
 
                 if (j == 499) {
                 i+=j;
-                printf("Found at 0x%p", code + i + j);
+                //printf("Found at 0x%p", code + i + j);
                 sus[numberOfsus++].address = code + i + j;
                 }
             }
@@ -4760,7 +4796,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             readRawAddr(hProcess, functions[i].begin, functions[i].size, i, 0);
                                             
-                                            printf("\x1b[92m[+]\x1b[0m Functions called: %lu\n\x1b[92m[?]\x1b[0m[%lu] <Enter> Move Forward\t<-> Move Back\t<q> End\n", numOfFunction, functions[i].num);
+                                            printf("\x1b[92m[+]\x1b[0m Functions called: %lu\n\x1b[92m[?]\x1b[0m[%lu] <Enter> Move Forward\t<-> Move Back\tg [function #]\t<q> End\n", numOfFunction, functions[i].num);
 
                                             allocStdin(AllocatedRegion, offsetHandles + 1000, stdin);
 
