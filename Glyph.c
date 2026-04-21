@@ -476,6 +476,25 @@ int mystrlen(char* buff) {
     }
 }
 
+int myisAlpha(unsigned char byte) {
+    if (byte >= 65 && byte <= 90 || byte <= 122 && byte >= 97) {
+        return 1;
+    }
+    return 0;
+}
+
+int myisprint(unsigned char byte) {
+    if (byte >= 0x20 && byte <= 0x7E) return 1;
+    return 0;
+}
+
+int toUpper(unsigned char byte) {
+    if (byte >= 97) {
+        byte -= 32;
+    } 
+    return byte;
+}
+
 char* zero(char* buff, char* delimiter) {
     int size = mystrlen(buff);
     for (int i=0; i < size; i++) {
@@ -632,7 +651,7 @@ typedef struct {
 static const avxKey key[] = {{"xmm", 1}, {"zmm", 1}, {"ymm", 1}};
 int avxCheck(char* opstr) {
     for (int i=0; i < 3; i++) {
-    if (strstr(opstr, key[i].string) != 0) {
+    if (mystrstr(opstr, key[i].string, mystrlen(key[i].string)) != 0) {
         return key[i].density;
     }
     }
@@ -642,7 +661,7 @@ int avxCheck(char* opstr) {
 int readString(uint64_t bytes, char* out) {
     if ((bytes >> 64) == 00) return 1;
     for (int i=0; i < 8; i++) {
-        if (isprint((bytes >> (i*8) & 0xFF))) {
+        if (myisprint((bytes >> (i*8) & 0xFF))) {
         out[i] = (bytes >> (i*8) & 0xFF);
         } else { return 1; }
     }
@@ -1660,7 +1679,7 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum, 
     // Print 100 raw memory bytes
     printf("\x1b[92m[+]\x1b[0m Chars:\n");
     for (SIZE_T i = 0; i < bytesToRead; i++) {
-        if (isprint(buff[i])) {  // Very useful to print only valid chars
+        if (myisprint(buff[i])) {  // Very useful to print only valid chars
         printf("%c ", buff[i]);;
         //if ((i +1) % 12 == 0) printf("\n");
     }
@@ -2399,7 +2418,7 @@ if (!ReadProcessMemory(hProcess, (BYTE*)peb.Base + sectionOffset + (i * sizeof(I
         printf("Error reading data %lu\n", GetLastError());
     } else {
     for (int i = 0; i < sizeof(buffer); i++) {
-    if (startUp != 1 && isprint(buffer[i])) {  // Very useful to print only valid chars
+    if (startUp != 1 && myisprint(buffer[i])) {  // Very useful to print only valid chars
     printf("%c ", buffer[i]);
     }
     }
@@ -3552,7 +3571,7 @@ if (!ReadProcessMemory(hProcess, (BYTE*)ntdllBase + sectionOffset + (i * sizeof(
         printf("Error reading data %lu\n", GetLastError());
     } else {
             for (int i = 0; i < size2read; i++) {
-            if (isprint(buffer[i])) { 
+            if (myisprint(buffer[i])) { 
         printf("%c ", buffer[i]);
     }
     }
@@ -4067,7 +4086,7 @@ typedef struct {
     char help[128];
 } CommandName;
 
-static const CommandName COMMANDS[] = {{"reg", "[!] List startup registers"}, {"getreg", NULL}, {"bp", NULL}, {"write", NULL}, {"threads", NULL}, {"swap", NULL}, {"dump", NULL}, {"disasm", NULL}, {"rebuild", NULL}, {"sub", NULL}, {"func", NULL}, {"jmp", NULL}, {"sw", NULL}, {"pointers", NULL}, {"hot", NULL}, {"mbi", NULL}, {"bit", NULL}, {"var", NULL}, {"veh", NULL}, {"imports", NULL}, {"entry", NULL}, {"dllcheck", NULL}, {"dllexp", NULL}, {"wor", NULL}, {"hooked", NULL}, {"heap", NULL}, {"static", NULL}, {"rsrc", NULL}, {"net", NULL}, {"mz", NULL}, {"rx", NULL}, {"stubs", NULL}, {"proc", NULL}, {"cpu", NULL}, {"attr", NULL}, {"peb", NULL}, {"params", NULL}, {"gsi", NULL}, {"cfg", NULL}, {"sig", NULL}, {"pwr", NULL}, {"handles", NULL}, {"handlesEx", NULL}, {"vendor", NULL}, {"dll", NULL}, {"tcp", NULL}, {"clear", NULL}, {"exit", NULL}, {"kill", NULL}, {"help", NULL}, {"ext", NULL}, {"wsl", NULL}, {"cmd", NULL}, {"edit", NULL}, {"docs", NULL}, {"save", NULL}, {"packs", NULL}, {"unload", NULL}, {"start", NULL}, {"pebPatch"}};
+static const CommandName COMMANDS[] = {{"reg", "[!] List startup registers"}, {"getreg", "[!] Get current register values"}, {"bp", "[!] Set a breakpoint"}, {"write", "[!] Write to an address"}, {"threads", "[!] List threads"}, {"swap", "[!] Swap thread (Run !threads to get #)"}, {"dump", "[!] Dump an address"}, {"disasm", NULL}, {"rebuild", NULL}, {"sub", NULL}, {"func", NULL}, {"jmp", NULL}, {"sw", NULL}, {"pointers", NULL}, {"hot", NULL}, {"mbi", NULL}, {"bit", NULL}, {"var", NULL}, {"veh", NULL}, {"imports", NULL}, {"entry", NULL}, {"dllcheck", NULL}, {"dllexp", NULL}, {"wor", NULL}, {"hooked", NULL}, {"heap", NULL}, {"static", NULL}, {"rsrc", NULL}, {"net", NULL}, {"mz", NULL}, {"rx", NULL}, {"stubs", NULL}, {"proc", NULL}, {"cpu", NULL}, {"attr", NULL}, {"peb", NULL}, {"params", NULL}, {"gsi", NULL}, {"cfg", NULL}, {"sig", NULL}, {"pwr", NULL}, {"handles", NULL}, {"handlesEx", NULL}, {"vendor", NULL}, {"dll", NULL}, {"tcp", NULL}, {"clear", NULL}, {"exit", NULL}, {"kill", NULL}, {"help", NULL}, {"ext", NULL}, {"wsl", NULL}, {"cmd", NULL}, {"edit", NULL}, {"docs", NULL}, {"save", NULL}, {"packs", NULL}, {"unload", NULL}, {"start", NULL}, {"pebPatch"}};
 
 int getHelp(char* buff) {
     for (int i=0; i < 60; i++) {
@@ -4107,6 +4126,72 @@ int checkMatch(char* buff) {
     return 1;
 }
 
+int slpWalk(char* filePath) {
+   
+    FILE* f = fopen(filePath, "rb");
+    if (!f) return 1;
+
+    fseek(f, 0, SEEK_END);
+    int size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    unsigned char* slp = malloc(size);
+    fread(slp, 1, size, f);
+
+    int DIFF = 0;
+
+    writeCon("BENDING SPACE AND TIME TO OUR WILL");
+    for (int p=0; p < 3; p++) {
+        writeCon(".");
+        Sleep(100);
+    }
+    writeCon("\n");
+
+    int importCount = 0;
+    for (int p=0; p < countImport; p++) {
+    Imports* Inimport = slp + (p * sizeof(Imports));
+    if (Inimport->name[0] == 'C' && Inimport->name[1] == NULL ) break;
+    if (mystrcmp(Inimport->name, imports[p].name) == 0) continue;
+    printf("Diff found: %s %s\t [0x%p]\n", imports[p].name, Inimport->name, imports[p].address);
+    DIFF++;
+    }
+    
+    int ModuleOffset = countImport * sizeof(Imports);
+    int j = 0;
+    for (int p=0; p < countModules; p++) {
+        Dlls* module = slp + ModuleOffset + j * sizeof(Dlls);
+        if (module->modName[0] != 'C') break;
+        j++;
+        if (strcmp(module->modName, modules[p].modName) == 0) continue;
+        wprintf(L"Diff found: %ws\n", module->modName);
+        DIFF++;
+    }
+
+    int funcTracker = 0;
+    for (int s=0; s < 500; s++) {       // Increase 
+
+        function* func = slp + ModuleOffset + j * sizeof(Dlls) + s * sizeof(function);
+
+        if (functions[funcTracker].op[0].asm[0] == 00) break;   // stop if user hasnt disasm yet
+
+        printf("%lu Begin: %p\t End: %p\tType: %02X\n", s, functions[funcTracker].begin, functions[funcTracker].end, functions[funcTracker].type);
+        
+        for (int i=0; i < 80; i++) {
+        if (!func->op[i].address) break;
+        if (strcmp(func->op[i].asm, functions[funcTracker].op[i].asm) == 0) continue;
+        printf("Diff found:\n%s\n", functions[funcTracker].op[i].asm);
+        DIFF++;
+        }
+
+        funcTracker++;
+    }
+
+    if (DIFF == 0) {
+        printf("Its the same...\n");
+    }
+
+    return 0;
+}
 wchar_t* secondParam = NULL; // argv[2]
 wchar_t* dllChoice; // Only for DLLs
 
@@ -5290,6 +5375,15 @@ BOOL WINAPI debug(LPCVOID param) {
                                             }
                                         }
 
+                                        else if (mystrcmp(buff, "!rift") == 0) {
+                                            writeCon("Which .slp file to dump?\n");
+                                            char slpBuff[256];
+                                            fgets(slpBuff, sizeof(slpBuff), stdin);
+                                            slpBuff[strcspn(slpBuff, "\n")] = '\0';
+                                            if (slpBuff[mystrlen(slpBuff) - 3] != 's' || slpBuff[mystrlen(slpBuff) - 2] != 'l' || slpBuff[mystrlen(slpBuff) - 1] != 'p') continue;
+                                            slpWalk(slpBuff);
+                                        }
+
                                         else if (mystrcmp(buff, "!kdump") == 0) {
                                             
                                             writeCon("Which address to read?\n");
@@ -5314,7 +5408,21 @@ BOOL WINAPI debug(LPCVOID param) {
                                             continue;
                                         }
 
-                                        
+                                        #define IOCTL_GET_BASE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+                                        else if (mystrcmp(buff, "!kbase") == 0) {
+                                            
+                                            HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+                                            if (h == INVALID_HANDLE_VALUE) {
+                                                printf("Failed to open driver %u\n", GetLastError());
+                                                return 1;
+                                            }
+
+                                            uint64_t address = {0};
+                                            unsigned long ret = 0;
+                                            DeviceIoControl(h, IOCTL_GET_BASE, 0, 0, &address, sizeof(uint64_t), &ret, 0);
+
+                                            printf("0x%llX\n", address);
+                                        }
 
                                         else {
                                             checkMatch(buff);
