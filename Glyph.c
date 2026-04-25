@@ -22,14 +22,15 @@
 
 CONTEXT context;
 
+// struct going into kernel
 typedef struct SEND {
         UINT64 address;
         HANDLE id;
         SIZE_T size;
 } SEND;
 
+// ring 3 reads from ring 0
 #define IOCTL_MY_QUERY CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
-
 int kernelRead(HANDLE procNum, void* address, unsigned char* out, SIZE_T size) {
 
     HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
@@ -54,6 +55,37 @@ int kernelRead(HANDLE procNum, void* address, unsigned char* out, SIZE_T size) {
     CloseHandle(h);
     return 0;
 }
+
+// ring 0 reads
+#define IOCTL_READ_BASE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
+int KkernelRead(void* address, int Size) {
+
+    HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        printf("Failed to open driver %u\n", GetLastError());
+        return 1;
+    }
+
+    SEND* send = malloc(1*sizeof(SEND));   
+
+    send->address = address;
+    send->size = Size;
+
+    unsigned char* out = malloc(Size);
+    int ret = 0;
+    DeviceIoControl(h, IOCTL_READ_BASE, send, sizeof(SEND), out, Size, &ret, 0);
+
+    printf("ret: %lu\n", ret);
+
+    for (int i=0; i < Size; i++) {
+        printf("%02X ", out[i]);
+    }
+
+    free(out);
+    return 0;
+}
+
 
 typedef struct {
     int isActive;
@@ -659,6 +691,7 @@ int avxCheck(char* opstr) {
 }
 
 int readString(uint64_t bytes, char* out) {
+
     if ((bytes >> 64) == 00) return 1;
     for (int i=0; i < 8; i++) {
         if (myisprint((bytes >> (i*8) & 0xFF))) {
@@ -794,6 +827,26 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                         printf("0x%p\n", finalComputedAddress);
                     }
 
+                    unsigned char pe4d = finalComputedAddress >> 64;
+                    unsigned char pe5a = finalComputedAddress >> 72;
+                    if (pe4d == 0x4D && pe5a == 0x5A) {
+                    printf("[!] Loading of a Dll found\n");
+                    writeCon("Would you like to walk it?\n");
+                    char buff[16];
+                    fgets(buff, sizeof(buff), stdin);
+                    buff[strcspn(buff, "\n")] = '\0';
+
+                    if (mystrcmp(buff, "no") != 0) {
+                    checkRemoteDLL(hProcess, finalAddress, 100);
+                    if (getRemoteImports(hProcess, 0, 0, finalAddress) == 3) {
+                        printf("Found Malware!\n");
+                    }
+                    getchar();
+                    }
+
+                    }
+
+
                     }
                     printed = 1;
                     }
@@ -926,6 +979,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                 printf("[ ]");
             }
         }
+
         printf("\n");
         
     } 
@@ -1147,8 +1201,7 @@ if (!ReadProcessMemory(hProcess, (BYTE*)baseAddress + dh.e_lfanew, &nt, sizeof(I
 
 //optional headers
 IMAGE_OPTIONAL_HEADER oh;
-if (!ReadProcessMemory(hProcess, (BYTE*)baseAddress + dh.e_lfanew + offsetof(IMAGE_NT_HEADERS, OptionalHeader), 
-                       &oh, sizeof(IMAGE_OPTIONAL_HEADER), NULL)) {
+if (!ReadProcessMemory(hProcess, (BYTE*)baseAddress + dh.e_lfanew + offsetof(IMAGE_NT_HEADERS, OptionalHeader), &oh, sizeof(IMAGE_OPTIONAL_HEADER), NULL)) {
     printf("Error reading Optional Header\n");
     return 1;
 }
@@ -1160,7 +1213,7 @@ peb.Entry = entryPoint;
 //some dlls like ntdll dont have imports
 if (oh.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress == 0) {
     printf("Does not have any imports.\n");
-    return 1;
+    return 3;
 } 
 
 
@@ -3372,6 +3425,8 @@ BOOL printHelp() {
 
     writeCon("!rx       - Disasm(Alt)\n");
 
+    writeCon("!rift     - Diff snapshots (Provide a .slp file using !save)\n");
+
     writeCon("!stubs    - Dump syscall stubs\n");
     
     writeCon("\n-- Process & System Info --\n");
@@ -3402,6 +3457,16 @@ BOOL printHelp() {
 
     writeCon("!tcp       - Get active tcp connections\n");
 
+    writeCon("\n-- Kernel Shit (Requires glass.sys) --\n");    
+    writeCon("[!] Anything starting with # reads kernel memory\n");
+    writeCon("!kdump      - Dump usermode memory using the kernel\n");
+    writeCon("#kbase      - Get the kernels base address\n");
+    writeCon("#kdump      - Dump kernel memory\n");
+
+    // Terminate
+    // modules
+    // kernel reads*
+    // writes
     writeCon("\n-- General Commands --\n");
     
     writeCon("clear       - Clear the console screen\n");
@@ -4162,6 +4227,7 @@ int slpWalk(char* filePath) {
         Dlls* module = slp + ModuleOffset + j * sizeof(Dlls);
         if (module->modName[0] != 'C') break;
         j++;
+        //wprintf(L"%ws\n", module->modName);
         if (strcmp(module->modName, modules[p].modName) == 0) continue;
         wprintf(L"Diff found: %ws\n", module->modName);
         DIFF++;
@@ -4179,7 +4245,7 @@ int slpWalk(char* filePath) {
         for (int i=0; i < 80; i++) {
         if (!func->op[i].address) break;
         if (strcmp(func->op[i].asm, functions[funcTracker].op[i].asm) == 0) continue;
-        printf("Diff found:\n%s\n", functions[funcTracker].op[i].asm);
+        printf("Diff found:\n%s [0x%p]\n", functions[funcTracker].op[i].asm, functions[funcTracker].op[i].address);
         DIFF++;
         }
 
@@ -4217,6 +4283,7 @@ BOOL WINAPI debug(LPCVOID param) {
     
     // ATTACH stuff
     if (wcscmp(process, L"-c") == 0) {
+        printf("hello\n");
         pi.dwProcessId = GetProc(secondParam, 0);
         pi.dwThreadId = threadid;
         if (pi.dwProcessId != 0 && pi.dwThreadId != 0) {
@@ -4254,6 +4321,11 @@ BOOL WINAPI debug(LPCVOID param) {
         if (!hProcess) {
             printf("Problem starting the debugger %lu\n", GetLastError());
         } else {
+
+            typedef void* (__stdcall *pNtResumeProcess)(void* hProc);
+            pNtResumeProcess resume = (pNtResumeProcess)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtResumeProcess");
+
+            NTSTATUS stat = resume(hProcess);
 
             DWORD threadId = pi.dwThreadId;
             
@@ -5409,7 +5481,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         }
 
                                         #define IOCTL_GET_BASE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
-                                        else if (mystrcmp(buff, "!kbase") == 0) {
+                                        else if (mystrcmp(buff, "#kbase") == 0) {
                                             
                                             HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
                                             if (h == INVALID_HANDLE_VALUE) {
@@ -5422,6 +5494,30 @@ BOOL WINAPI debug(LPCVOID param) {
                                             DeviceIoControl(h, IOCTL_GET_BASE, 0, 0, &address, sizeof(uint64_t), &ret, 0);
 
                                             printf("0x%llX\n", address);
+                                            continue;
+                                        }
+
+                                        else if (mystrcmp(buff, "#kdump") == 0) {
+                                            
+                                            writeCon("Which address to read?\n");
+                                            char addrBuff[64];
+                                            fgets(addrBuff, sizeof(addrBuff), stdin);
+                                            addrBuff[strcspn(addrBuff, "\n")] = '\0';
+
+                                            ULONGLONG addr = 0;
+                                            if (sscanf(addrBuff, "%llx", &addr) != 1 || addr == 0) {
+                                            printf("Error: invalid address '%s'\n", addrBuff);
+                                            continue;
+                                            }
+
+                                            writeCon("How many bytes to dump?\n");
+                                            char numBuff[64];
+                                            fgets(numBuff, sizeof(numBuff), stdin);
+                                            numBuff[strcspn(numBuff, "\n")] = '\0';
+
+                                            int size = atoi(numBuff);
+
+                                            KkernelRead(addr, size);
                                         }
 
                                         else {
@@ -5574,23 +5670,6 @@ int wmain(int argc, wchar_t* argv[]) {
             return 0;
         }
     }
-
-    if (wcscmp(argv[2], L"-b") == 0) {
-        breakpointSet = 1;
-        
-        breakBuff = (char*)malloc(100 * sizeof(char));
-                                             
-        printf("\x1b[92m[-]\x1b[0m Which Function to break at?\n");
-                                   
-        if  (!fgets(breakBuff, 99, stdin)) {
-            printf("buffer to large\n");
-            return FALSE;
-            }
-
-        breakBuff[strcspn(breakBuff, "\n")] = '\0';
-
-
-    }
     
     if (wcscmp(argv[1], L"-ELF") == 0) {
         if (argc < 3) {
@@ -5602,6 +5681,7 @@ int wmain(int argc, wchar_t* argv[]) {
 
     // sus
     if (argc > 2) {
+        
         secondParam = argv[2];
 
         // DLL stuff
@@ -5630,24 +5710,6 @@ int wmain(int argc, wchar_t* argv[]) {
         return 0;
     }
 
-        if (argv[3]) {
-
-        breakpointSet = 1;
-        
-        breakBuff = (char*)malloc(100 * sizeof(char));
-                                             
-        printf("\x1b[92m[-]\x1b[0m What address to break at?\n");
-                                   
-        if  (!fgets(breakBuff, 99, stdin)) {
-            printf("buffer to large\n");
-            return FALSE;
-            }
-
-        breakBuff[strcspn(breakBuff, "\n")] = '\0';
-
-
-    }
-        //wprintf(L"%ws\n", argv[2]);
     }
 
     if (debugFiber) {
