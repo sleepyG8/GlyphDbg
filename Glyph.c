@@ -20,6 +20,10 @@
 #pragma comment(lib, "Shell32.lib")
 #pragma comment(lib, "capstone.lib")
 
+#pragma comment(linker, "/alternatename:patch=patchFallback")
+extern void* patch();
+int patchFallback() { return 1; }; // Return 1 if fallback is called, means pebPatch.obj was not linked
+
 CONTEXT context;
 
 // struct going into kernel
@@ -85,7 +89,6 @@ int KkernelRead(void* address, int Size) {
     free(out);
     return 0;
 }
-
 
 typedef struct {
     int isActive;
@@ -1956,6 +1959,18 @@ MYPEB pbi;
 WCHAR dllName[MAX_PATH] = {0};
 
 int isStartup = 0;
+
+typedef struct {
+    uint64_t address;
+    uint64_t textStart;
+    uint64_t textEnd;
+    wchar_t dllName[MAX_PATH];
+} RemoteDLLSectionInfo;
+
+RemoteDLLSectionInfo remoteDLLInfo[500];
+
+int currentRemoteDllCount = 0;
+
 // Peb :)
 BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWORD id) {
     
@@ -2076,7 +2091,16 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
 
         // Adding to a struct
         addModule(name, ldrEntry.DllBase);
-        
+
+        // remote dll data struct
+        checkRemoteDLL(hProcess, ldrEntry.DllBase, 0);
+        for (int p=0; ; p++) {
+            if (name[p] == 00 && name[p+1] == 00 && name[p+2] == 00) break;
+            remoteDLLInfo[currentRemoteDllCount].dllName[p] = name[p];
+        }
+
+        currentRemoteDllCount++;
+
         currentEntry = ldrEntry.InLoadOrderLinks.Flink;
        
     }
@@ -3586,8 +3610,6 @@ while (1) {
 
 BOOL checkRemoteDLL(HANDLE hProcess, PVOID base, int size2read) {
 
-printf("base: %p\n", ntdllBase);
-
 if (base) {
     ntdllBase = base;
 }
@@ -3603,7 +3625,7 @@ if (!ReadProcessMemory(hProcess, ntdllBase, &dh, sizeof(IMAGE_DOS_HEADER), NULL)
 if (dh.e_magic != IMAGE_DOS_SIGNATURE) {
     printf("error 3 %lu\n", GetLastError());
     return FALSE;
-} else {
+} else if (size2read != 0) {
     printf("\x1b[92m[+]\x1b[0m Valid PE file: YES-%x\n", dh.e_magic);
 }
 
@@ -3626,16 +3648,29 @@ if (!ReadProcessMemory(hProcess, (BYTE*)ntdllBase + sectionOffset + (i * sizeof(
     printf("Error reading section memory %lu", GetLastError());
     }
 
-    printf("\x1b[92m[+]\x1b[0m %s\n", (char*)section.Name);
-
     BYTE* address = (BYTE*)ntdllBase + section.VirtualAddress;
+
+    if (size2read != 0) {
+    printf("\x1b[92m[+]\x1b[0m %s\n", (char*)section.Name);
     printf("\x1b[92m[+]\x1b[0m Section: %s | Address: 0x%p | Size: %d\n", section.Name, (void*)address, section.SizeOfRawData);
+    }
+
+    if (mystrcmp(section.Name, ".text") == 0 && size2read == 0) {
+        uint64_t start = (BYTE*)ntdllBase + section.VirtualAddress;
+        uint64_t end = (BYTE*)ntdllBase + section.VirtualAddress + section.SizeOfRawData;
+        remoteDLLInfo[currentRemoteDllCount].address = (uint64_t)address;
+        remoteDLLInfo[currentRemoteDllCount].textStart = start;
+        remoteDLLInfo[currentRemoteDllCount].textEnd = end;
+        return 0; 
+    }
+
+    if (size2read != 0) {   // only do if size is set
 
     char* buffer = malloc(section.SizeOfRawData);
     if (!ReadProcessMemory(hProcess, (BYTE*)ntdllBase + section.VirtualAddress, buffer, section.SizeOfRawData, NULL)) {
         printf("Error reading data %lu\n", GetLastError());
     } else {
-            for (int i = 0; i < size2read; i++) {
+        for (int i = 0; i < size2read; i++) {
             if (myisprint(buffer[i])) { 
         printf("%c ", buffer[i]);
     }
@@ -3650,6 +3685,7 @@ if (!ReadProcessMemory(hProcess, (BYTE*)ntdllBase + sectionOffset + (i * sizeof(
     printf("\n");
 
     }
+}
     
 }
 }
@@ -4261,18 +4297,73 @@ int slpWalk(char* filePath) {
 wchar_t* secondParam = NULL; // argv[2]
 wchar_t* dllChoice; // Only for DLLs
 
+int dumped = 0;
+
+int DumpReg(char* name, int isIn) {
+    HKEY out;
+    long res = RegOpenKeyExA(HKEY_LOCAL_MACHINE, name, 0, KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | KEY_READ, &out);
+
+    printf("[!] %s\n", name);
+
+    //if (endWalk() == 1) return 0;
+
+    if (!out) return 0;
+                
+    for (int p=0; p < 10; p++) {
+    
+    char buff[255]; 
+    res = RegEnumKeyA(out, p, &buff, sizeof(buff));
+    
+    if (buff[0] != 00) {
+    printf("%s\n", buff);
+    }
+
+    char in[255];
+    sprintf(in, "%s\\%s", name, buff);
+ 
+    if (res == ERROR_NO_MORE_ITEMS || res == ERROR_MORE_DATA || res == ERROR_ACCESS_DENIED) return 0;
+
+
+    // do it again
+    DumpReg(in, 1);
+    }
+        
+    return 0;
+}
+
+typedef struct EPROCESSINFO {
+    unsigned long long addr;
+    unsigned long offset;
+} EPROCESSINFO;
+            
+EPROCESSINFO info;
+
+#define IOCTL_GET_EPROC_OFFSET CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
+int getEprocOffset() {
+    
+    HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        printf("Failed to open driver %u\n", GetLastError());
+        return 1;
+    }
+
+    int ret = 0;
+    DeviceIoControl(h, IOCTL_GET_EPROC_OFFSET, 0, 0, &info, sizeof(EPROCESSINFO), &ret, 0);
+
+    printf("EPROCESS: Offset: %02X [0x%p]\n", info.offset, info.addr);
+    return 0;
+}
+
 typedef struct lastDisasm {
     int lastFuncDisasm;
     int size;
 } lastDisasm;
-
 lastDisasm* lastFunction = NULL;
 
 char *breakBuff;
 int breakSet = 0;
-#pragma comment(linker, "/alternatename:patch=patchFallback")
-extern void* patch();
-int patchFallback() { return 1; }; // Return 1 if fallback is called, means pebPatch.obj was not linked
+
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -4968,12 +5059,15 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 lastFunction->size = functions[i].size;
                                                 writeCon("Created save point!\n");
                                                 break;
-                                            } else if (breakBuffer[0] = 'g') {
+                                            } else if (breakBuffer[0] == 'g') {
                                                 if (isdigit(breakBuffer[2])) {
-                                                    char number[32];
-                                                    for (int j=0; ;j++) {
-                                                        if (breakBuffer[1+j] == 0x00) break;
-                                                        number[j] = breakBuffer[1+j];
+                                                    char number[5];
+                                                    for (int j=0; j < mystrlen(breakBuffer) ;j++) {
+                                                        if (breakBuffer[2+j] == 0x00) {
+                                                            number[j] = 0x00;
+                                                            break;
+                                                        }
+                                                        number[j] = breakBuffer[2+j];
                                                     }
 
                                                     int finalNum = atoi(number);
@@ -4981,6 +5075,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                                     printf("Fast Travel to function # %lu\n", finalNum);
 
                                                     i = finalNum - 1;
+                                                    breakBuffer[0] = 00;
                                                     continue;
                                                 }
                                             }else continue;
@@ -5138,10 +5233,16 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 }
                                             }
                                             for (int i=0; i < countModules; i++) {
-                                                if (modules[i].modAddress == address) {
+                                                if (modules[i].modAddress == address) { // If its a module base
                                                     wprintf(L"\033[31m[+]\033[0m Module: %ws\n", modules[i].modName);
                                                     break;
                                                 }
+                                                //Check which .text section it resides in
+                                                if (remoteDLLInfo[i].textEnd >= address && remoteDLLInfo[i].textStart <= address) {
+                                                    int offset = (unsigned char*)address - remoteDLLInfo[i].textStart;
+                                                    wprintf(L"\033[31m[+]\033[0m Module: %ws \033[31m[+]\033[0m RVA: 0x%p\n", remoteDLLInfo[i].dllName, offset);
+                                                }
+
                                             }
 
                                             printf("\033[31m[+]\033[0m DUMP at 0x%p:\n", address);
@@ -5456,6 +5557,15 @@ BOOL WINAPI debug(LPCVOID param) {
                                             slpWalk(slpBuff);
                                         }
 
+                                        else if (mystrcmp(buff, "!reggie") == 0) {
+                                            char inBuff[255];
+                                            fgets(inBuff, sizeof(inBuff), stdin);
+                                            zero(inBuff, '\n');
+
+                                            DumpReg(inBuff, 0);
+                                            continue;
+                                        }
+
                                         else if (mystrcmp(buff, "!kdump") == 0) {
                                             
                                             writeCon("Which address to read?\n");
@@ -5494,6 +5604,9 @@ BOOL WINAPI debug(LPCVOID param) {
                                             DeviceIoControl(h, IOCTL_GET_BASE, 0, 0, &address, sizeof(uint64_t), &ret, 0);
 
                                             printf("0x%llX\n", address);
+
+                                            getEprocOffset();
+
                                             continue;
                                         }
 
@@ -5518,6 +5631,20 @@ BOOL WINAPI debug(LPCVOID param) {
                                             int size = atoi(numBuff);
 
                                             KkernelRead(addr, size);
+                                        }
+
+                                        else if (mystrcmp(buff, "!rtext") == 0) {
+                                            for (int i=0; i < 500; i++) {
+                                                if (remoteDLLInfo[i].address == 0) break;
+                                                    printf("[%lu]===========================================\n", i);
+                                                    for (int p=0; p < MAX_PATH; p++) {
+                                                    wprintf(L"%wc", remoteDLLInfo[i].dllName[p]);
+                                                    }
+                                                    printf("\n");
+                                                    int Size = remoteDLLInfo[i].textEnd - remoteDLLInfo[i].textStart;
+                                                    printf("START: %llx\tEND: %llx\tSIZE: %lu\n", remoteDLLInfo[i].textStart, remoteDLLInfo[i].textEnd, Size); 
+                                                    printf("===========================================\n");
+                                            }
                                         }
 
                                         else {
@@ -5564,6 +5691,12 @@ int setPriv() {
 }
 
 int wmain(int argc, wchar_t* argv[]) {
+
+    for (int i=0; i < 500; i++) {
+        remoteDLLInfo[i].address = 00000000;
+        remoteDLLInfo->textStart = 00000000;
+        remoteDLLInfo->textEnd = 00000000;
+    }
 
     unsigned char mem[320]; // 29 * 8
     packs = (EnabledPacks*)mem;
