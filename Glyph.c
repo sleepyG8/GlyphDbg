@@ -4090,11 +4090,11 @@ POINTERS* point;
 
 int getDataPointers(void* hProcess, unsigned char* data, int Size) {
     
-    point = malloc((Size / 8) * sizeof(POINTERS));
+    point = malloc((Size) * sizeof(POINTERS));
     unsigned char* buff = malloc(Size); 
     ReadProcessMemory(hProcess, data, buff, Size, 0);
 
-    for (int i=0; i < Size / 8; i+=8) {
+    for (int i=0; i < Size; i+=8) {
         if ((*(void**)((unsigned char*)buff + i)) == 00) continue;
         for (int j=0; j < 10; j++) {
         if ((*(void**)((unsigned char*)buff + i)) <= codeRegions->codeBounds[j].end && (*(void**)((unsigned char*)buff + i)) >= codeRegions->codeBounds[j].start) {
@@ -4355,6 +4355,53 @@ int getEprocOffset() {
     return 0;
 }
 
+typedef struct GRID {
+    uint64_t address;
+    char name[128];
+} GRID;
+
+GRID* grid(char* fileBuff, int sizeOfFile) {
+
+    int upUntil = 0;
+    int done = 0;
+    int Total = 0;
+    
+    printf("Setting up the grid...\n");
+
+    GRID* griddy = malloc(15 * sizeof(GRID));
+    if (!griddy) return 0;
+
+    for (int i=0; i < 10; i++) {
+        strcpy(griddy[i].name, "NULL");
+        griddy[i].address = 00;
+    }
+    
+    for (int i=0; i < 10; i++) {
+        
+        if (upUntil+1 == 0x00) break;
+
+        char line[150];
+        // get each line
+        int j;
+        for (j=0; ; j++) {
+            line[j] = fileBuff[j+upUntil];
+            if (line[j] == 0x0A || line[j] == 0x0D || line[j] == 00) {
+                line[j] = 00;
+                break;
+            }
+
+        }
+
+
+        upUntil += j+2;
+
+        strcpy(griddy[i].name, &line);
+
+    }
+
+    return griddy;
+}
+
 typedef struct lastDisasm {
     int lastFuncDisasm;
     int size;
@@ -4482,6 +4529,7 @@ BOOL WINAPI debug(LPCVOID param) {
                         break;
                     }
                 }
+
                 BreakPoint(hProcess, address);
                 writeCon("BreakPoint Set...\n");
             }
@@ -5362,7 +5410,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             continue;
                                         }
                                         // Breakpoints
-                                        else if (mystrcmp(buff, "!bp") == 0) {  
+                                        else if (mystrcmp(buff, "!bp") == 0 || mystrcmp(buff, "!grid") == 0) {  
                                             HANDLE hFile = CreateFileA("break.dll", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
                                             if (!hFile) {
                                                 printf("Please place break.dll into working directory...\n");
@@ -5377,6 +5425,50 @@ BOOL WINAPI debug(LPCVOID param) {
                                             breakSet = 1;
                                             }
 
+                                            if (mystrcmp(buff, "!grid") == 0) {
+
+                                            FILE* f = fopen("grid.txt", "rb");
+                                            if (!f) {
+                                                printf("Make sure grid.txt is in current directory\n");
+                                                continue;
+                                            }
+    
+                                            fseek(f, 0, SEEK_END);
+                                            int size = ftell(f);
+                                            fseek(f, 0, SEEK_SET);
+
+                                            unsigned char* inFile = malloc(size);
+
+                                            for (int p=0; p < size; p++) {
+                                                inFile[p] = 00;
+                                            }
+
+                                            fread(inFile, 1, size, f);
+
+                                            GRID* out = grid(inFile, size);
+
+                                            for (int i=0; i < 10; i++) {
+
+                                                // Use hash map in future to make 0(1)
+                                                for (int s=0; s < countImport; s++) {
+                                                if (mystrcmp(imports[s].name, out[i].name) == 0 && mystrlen(imports[s].name) >= 5) {
+                                                    printf("Setting a BP on 0x%p\n", imports[s].address);
+                                                    BreakPoint(hProcess, imports[s].address);
+                                                    printf("[%s]\n", out[i].name);
+                                                    }
+
+                                                }
+
+                                                }
+
+                                                free(inFile);
+                                                free(out);
+                                                fclose(f);
+                                                continue;
+                                            }
+
+                                            printf("skipped\n");
+                                            continue;
                                             char bpBuff[32];
                                             writeCon("Which Address to Break At??\n");
                                             fgets(bpBuff, sizeof(bpBuff), stdin);
@@ -5649,7 +5741,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                         else {
                                             checkMatch(buff);
-                                            writeCon("Wrong command\n");
+                                            //writeCon("Wrong command\n");
                                         }
                                     
                                     } else {
