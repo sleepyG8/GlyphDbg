@@ -19,8 +19,8 @@
 #pragma comment(lib, "Psapi.lib")
 #pragma comment(lib, "Shell32.lib")
 #pragma comment(lib, "capstone.lib")
-
 #pragma comment(linker, "/alternatename:patch=patchFallback")
+
 extern void* patch();
 int patchFallback() { return 1; }; // Return 1 if fallback is called, means pebPatch.obj was not linked
 
@@ -87,6 +87,61 @@ int KkernelRead(void* address, int Size) {
     }
 
     free(out);
+    return 0;
+}
+
+// Hash map to make import search 0(1) in the !grid command
+typedef struct ENTRY {
+    UINT64 address;
+    int offset;
+    unsigned char key[50];
+} ENTRY;
+
+typedef struct HashMapEntry {
+    ENTRY entry[100];
+    int currentEntry;
+} HashMapEntry;
+
+typedef struct HASHMAP {
+    HashMapEntry entry[10];
+} HASHMAP;
+
+unsigned int hash(unsigned char* key) {
+    unsigned long int value = 0;
+    unsigned int key_len = strlen(key);
+
+    for (int i=0; i < key_len; ++i) {
+        value = i * 32 + key[i];
+    }
+
+    return value % 10;
+}
+
+int insert(HASHMAP* map, unsigned char* key, int offset, UINT64 addr) {
+
+    unsigned long res = hash(key);
+    int current = map->entry[res].currentEntry;
+    map->entry[res].currentEntry++;
+    
+    strcpy(map->entry[res].entry[current].key, key);
+    map->entry[res].entry[current].offset = offset;
+    map->entry[res].entry[current].address = addr;
+    return 0;
+}
+
+ENTRY* read(HASHMAP* map, unsigned char* key) {
+
+    unsigned long res = hash(key);
+    for (int i=0; i < 100; i++) {
+
+    if (map->entry[res].entry[i].address == 00) break;
+
+    if (mystrcmp(map->entry[res].entry[i].key, key) == 0) {
+    return &map->entry[res].entry[i];
+    }
+
+    }
+
     return 0;
 }
 
@@ -1151,6 +1206,8 @@ BOOL listModules() {
     return TRUE;
 }
 
+HASHMAP* map;
+
 // struct for storing hooked functions 
 typedef struct {
     char name[150];
@@ -1244,8 +1301,6 @@ if (!ReadProcessMemory(hProcess, (BYTE*)baseAddress + id.Name, importName, sizeo
 // if (breakpointSet == 0) {
 // printf("%s\n", (char*)importName);
 // }
-
-//if (mystrcmp(importName, "OLEAUT32.dll") == 0) break;
 
 // use these for looping
 uintptr_t origThunkAddr = (uintptr_t)baseAddress + id.OriginalFirstThunk;
@@ -1375,6 +1430,20 @@ while (TRUE) {
 // Move forward 1 ID just like my ID++
 importDescAddr += sizeof(IMAGE_IMPORT_DESCRIPTOR);
 }
+
+map = malloc(sizeof(HASHMAP));  // hashmap
+for (int i=0; i < 10; i++) {
+    map->entry[i].currentEntry = 0;
+    for (int p=0; p < 100; p++) {
+    map->entry[i].entry[p].address = 00000000;
+    map->entry[i].entry[p].offset = 00;
+    }
+}
+
+for (int i=0; i < countImport; i++) {
+    insert(map, imports[i].name, 0, imports[i].address);
+}
+
 
 return 0;
 }
@@ -4392,7 +4461,6 @@ GRID* grid(char* fileBuff, int sizeOfFile) {
 
         }
 
-
         upUntil += j+2;
 
         strcpy(griddy[i].name, &line);
@@ -5421,6 +5489,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             if (breakSet == 0) {
                                             injectBridge(hProcess, path);
+                                            Sleep(1000);
                                             fillPack("Debug Handler", 0, NULL);
                                             breakSet = 1;
                                             }
@@ -5450,14 +5519,15 @@ BOOL WINAPI debug(LPCVOID param) {
                                             for (int i=0; i < 10; i++) {
 
                                                 // Use hash map in future to make 0(1)
-                                                for (int s=0; s < countImport; s++) {
-                                                if (mystrcmp(imports[s].name, out[i].name) == 0 && mystrlen(imports[s].name) >= 5) {
-                                                    printf("Setting a BP on 0x%p\n", imports[s].address);
-                                                    BreakPoint(hProcess, imports[s].address);
+                                                ENTRY* res = read(map, out[i].name);
+                                                if (res == 0) continue;
+                                                if (mystrcmp(res->key, out[i].name) == 0 && mystrlen(res->key) >= 5) {
+                                                    printf("Setting a BP on 0x%p\n", res->address);
+                                                    BreakPoint(hProcess, res->address);
                                                     printf("[%s]\n", out[i].name);
                                                     }
 
-                                                }
+                                                
 
                                                 }
 
@@ -5467,8 +5537,6 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 continue;
                                             }
 
-                                            printf("skipped\n");
-                                            continue;
                                             char bpBuff[32];
                                             writeCon("Which Address to Break At??\n");
                                             fgets(bpBuff, sizeof(bpBuff), stdin);
@@ -5570,6 +5638,8 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                                 }
                                                 }
+                                                free(Times);
+                                                continue;
                                         }
                                         // Set aggresive scanning for things like .data
                                         else if (mystrcmp(buff, "!grr") == 0) {
@@ -5741,7 +5811,6 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                         else {
                                             checkMatch(buff);
-                                            //writeCon("Wrong command\n");
                                         }
                                     
                                     } else {
