@@ -3460,6 +3460,8 @@ BOOL printHelp() {
 
     writeCon("!bp       - Set a breakpoint on an address\n");
 
+    writeCon("!grid     - Create a breakpoint grid (Must create grid.txt file)\n");
+
     writeCon("!write    - Write to a Address ex. CC\n");
 
     writeCon("!threads  - Get all threads\n");
@@ -3470,7 +3472,7 @@ BOOL printHelp() {
     
     writeCon("!dump     - Dump a raw address (retry if ERROR_ACCESS_DENIED)\n");
 
-    writeCon("!disasm    - Disassemble the function boundaries\n");
+    writeCon("!disasm   - Disassemble the function boundaries\n");
 
     writeCon("!rebuild  - Rebuild memory of an address into a PE (extracting code)\n");
 
@@ -3541,12 +3543,16 @@ BOOL printHelp() {
     writeCon("!sig      - Get signature\n");
     
     writeCon("!pwr      - Check CPU GHz\n");
+
+    writeCon("!reggie   - Dump registry\n");
     
     writeCon("!handles & !handlesEx  - Dump Handles\n");
 
     writeCon("!vendor   - Get CPU vendor\n");
 
     writeCon("!dll       - List all loaded modules\n");
+
+    writeCon("!rift      - Diff with previous .slp state file\n");
 
     writeCon("!tcp       - Get active tcp connections\n");
 
@@ -3592,7 +3598,9 @@ BOOL printHelp() {
 
     writeCon("0x????????  - Send an address and get info\n");
 
-    writeCon("Extras: [!pebPatch] - patch glyphs peb\n");
+    writeCon("\n[!][Extras]\n!pebPatch          - patch glyphs peb\n");
+
+    writeCon("??                 - Dump a random function\n");
 
     writeCon("==============================\n");
 }
@@ -4620,12 +4628,10 @@ BOOL WINAPI debug(LPCVOID param) {
                             
                             writeCon("\033[35mDebug>>\033[0m");
 
-                            // Custom memory allocator
+                            // memory allocator
                             allocStdin(AllocatedRegion, offsetHandles + 200, stdin);
-                            // Reading from allocated region
                             char* buff = (char*)readAlloc(AllocatedRegion, offsetHandles + 200);
-                            
-                            buff[strcspn(buff, "\n")] = '\0';
+                            zero(buff, '\n');
 
                             // Loading Optional dll for history, tutorial, cmd storage, more to come
                             if (cmdPacksStartup == 0) {
@@ -4651,7 +4657,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                             if ((unsigned char*)buff[0] != 00) {
 
-                                if (buff[0] == '?') {
+                                if (buff[0] == '?' && buff[1] != '?') {
                                     getHelp(buff);
                                     continue;
                                 }
@@ -4701,16 +4707,12 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                 else if (mystrcmp(buff, "exit") == 0) {
                                        pNtTerminateProcess NtTerminateProcess = (pNtTerminateProcess)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtTerminateProcess");
-                                       if (!NtTerminateProcess) return FALSE;
                                        NTSTATUS status = NtTerminateProcess(NULL, 0);
                                        if (NT_SUCCESS(status)) {
-                                        printf("See ya!\n", pi.dwProcessId);
-                                        printf("\a");
-                                       } else {
-                                        printf("NTSTATUS: 0x%08X - Error killing\n", status);
-                                       }   
-                                       //Second call? Try it with 1 it doesnt work, this just works
-                                       NtTerminateProcess(NULL, 0);    
+                                        printf("See ya!\n");
+                                        return 0;    
+                                       }        
+                                       printf("NTSTATUS: 0x%08X - Error killing\n", status);          
                                 }
 
                                 else if (mystrcmp(buff, "!params") == 0) {
@@ -5721,6 +5723,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                         else if (mystrcmp(buff, "!reggie") == 0) {
                                             char inBuff[255];
+                                            writeCon("[?] Path? (If unsure press Enter)\n");
                                             fgets(inBuff, sizeof(inBuff), stdin);
                                             zero(inBuff, '\n');
 
@@ -5809,6 +5812,30 @@ BOOL WINAPI debug(LPCVOID param) {
                                             }
                                         }
 
+                                        else if (mystrcmp(buff, "??") == 0) {
+                                            redo:
+                                            unsigned long long rand = 00;
+                                            unsigned long long rand2 = 00;
+                                            int finalNum = 0;
+
+                                            for (int p=0; ; p++) {
+                                            _rdrand64_step(&rand);
+                                            _rdrand64_step(&rand2);
+                                            finalNum = (rand >> 56) << 8 | (rand2 >> 56);
+                                            finalNum = finalNum % funcCount;
+                                            if ((finalNum) <= funcCount && (finalNum) >= 00) break;
+                                            }
+
+                                            readRawAddr(hProcess, functions[finalNum].begin, functions[finalNum].size, finalNum, 0);
+                                            printf("Dumped Function # [%lu of %lu]\n", finalNum, funcCount);
+
+                                            printf("[?] Another One?? (Enter for yes) (q to exit)");
+                                            char randAsk[16];
+                                            fgets(randAsk, 8, stdin);
+                                            if (randAsk[0] != 'q') goto redo;
+                                            continue;
+                                        }
+
                                         else {
                                             checkMatch(buff);
                                         }
@@ -5820,11 +5847,8 @@ BOOL WINAPI debug(LPCVOID param) {
                                     }                  
                                 }   
            
-    // Closing the cmd Line cleanup
-    WaitForInputIdle(pi.hProcess, INFINITE);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    return TRUE;
+
+                                return TRUE;
 }
 
 // Run as admin to set SeDebugPriv
