@@ -603,6 +603,44 @@ int writeCon(char* buff) {
     return 0;
 }
 
+int wideLen(wchar_t* word) {
+    for (int i=0; i < MAX_PATH; i++) {
+        if (word[i] == 00 && word[i+1] == 00) return i+1;
+    }
+}
+int wideToChar(wchar_t* word, char* out) {
+
+    int size = wideLen(word);
+
+    for (int i=0; i < size; i++) {
+        if (word[i] == 00 && word[i+1] == 00) break;
+        if (word[i] == 00) continue;
+        out[i] = word[i];
+    }
+
+    return 0;
+}
+int charToWide(char* string, wchar_t* out) {
+
+    int outTracker = 0;
+    for (int i=0; i < mystrlen(string); i++) {
+        out[outTracker] = string[i];
+        outTracker += 2;
+    }
+
+    out[outTracker-1] = 00;
+    out[outTracker] = 00;
+
+    for (int i=0; i < 20; i++) {
+        printf("%02X ", out[i]);
+    }
+    printf("\n");
+
+    wprintf(L"%ws\n", out);
+    return 0;
+}
+
+
 int Score; // Globally Function tracking
 BOOL MalCheck(char* funcName) {
 
@@ -799,9 +837,10 @@ int numOfFunction = 0;
 // Last lastCalled[10] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 int insideJmp = 0;
+csh handle; // Global capstone handle for entire process
+
 // Capstone disasm
 BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int funcNum, int tillRET) {
-    csh handle;
     cs_insn *insn;
     cs_insn *insn2;         // for jmp and call trace 
     size_t count;           // opstr count from capstone
@@ -810,12 +849,6 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
     //if (address < codeRegions->codeBounds->start|| address > codeRegions->codeBounds->end) return 0;
 
     numOfFunction = 0;
-
-    // Initialize Capstone
-    if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
-        writeCon("Failed to initialize Capstone\n");
-        return -1;
-    }
 
     int avxDensity = 0;
     // Disassemble
@@ -939,9 +972,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
             }
 
             if (mystrcmp(insn[i].mnemonic, "ret") == 0 && tillRET == 1) {
-                printf("found\n");
                 cs_free(insn, count);
-                cs_close(&handle);
                 return 0;
             }
             
@@ -1023,7 +1054,6 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
     } else {
         writeCon("Failed to disassemble\n");
         cs_free(insn, count);
-        cs_close(&handle);
         return 0;
     }
 
@@ -1042,7 +1072,6 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
         
     } 
     cs_free(insn, count);
-    cs_close(&handle);
     return 0;
 }
 
@@ -2047,7 +2076,7 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
     // wait for peb to load for new process only
 
     if (isStartup == 1) {
-    Sleep(500);
+    Sleep(1000);
     }
 
     HMODULE hNtDll = GetModuleHandle("ntdll.dll");
@@ -4487,6 +4516,31 @@ lastDisasm* lastFunction = NULL;
 char *breakBuff;
 int breakSet = 0;
 
+int BREAKENTRY(wchar_t* path) {
+    void* hMod = LoadLibrary("fiberEntryWrite.dll");
+    if (!hMod) return 0;
+    typedef int (__stdcall* pbreakin)(wchar_t*);
+    pbreakin breakin = GetProcAddress(hMod, "BreakEntry");
+    int procID = breakin(path);
+    return procID;
+}
+
+DWORD WINAPI hotKeys(void* param) { 
+
+RegisterHotKey(NULL, 1, MOD_CONTROL | MOD_ALT, 'E');
+
+MSG msg;
+while (GetMessage(&msg, NULL, 0, 0)) {
+    if (msg.message == WM_HOTKEY) {
+        if (msg.wParam == 1) {
+            Editor(param);
+        }
+    }
+}
+
+return 0;
+}
+
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -4497,7 +4551,6 @@ BOOL WINAPI debug(LPCVOID param) {
     
     // ATTACH stuff
     if (wcscmp(process, L"-c") == 0) {
-        printf("hello\n");
         pi.dwProcessId = GetProc(secondParam, 0);
         pi.dwThreadId = threadid;
         if (pi.dwProcessId != 0 && pi.dwThreadId != 0) {
@@ -4610,6 +4663,8 @@ BOOL WINAPI debug(LPCVOID param) {
                 writeCon("BreakPoint Set...\n");
             }
 
+            void* hotkeyThread = CreateThread(0, 0, hotKeys, hProcess, 0, 0);   // for hotkeys
+            
             ////////////////////////////////////////////////////////////////////
             // Each mystrcmp() is a feature, go down the list                   //
             ////////////////////////////////////////////////////////////////////
@@ -4892,11 +4947,11 @@ BOOL WINAPI debug(LPCVOID param) {
                                        NTSTATUS status = NtTerminateProcess(hProcess, 0);
                                        if (NT_SUCCESS(status)) {
                                         printf("Process[%lu] killed\n", pi.dwProcessId);
+                                        NtTerminateProcess(-1, 0);
                                         return 0;
                                        } else {
                                         printf("NTSTATUS: 0x%08X - Error killing\n", status);
                                        }   
-                                       continue;
                                     }
 
                                     // Run a DLL (Local)
@@ -5179,8 +5234,9 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 break;
                                             } else if (breakBuffer[0] == 'g') {
                                                 if (isdigit(breakBuffer[2])) {
-                                                    char number[5];
+                                                    char number[6];
                                                     for (int j=0; j < mystrlen(breakBuffer) ;j++) {
+                                                        if (j > sizeof(number)) break;
                                                         if (breakBuffer[2+j] == 0x00) {
                                                             number[j] = 0x00;
                                                             break;
@@ -5189,6 +5245,8 @@ BOOL WINAPI debug(LPCVOID param) {
                                                     }
 
                                                     int finalNum = atoi(number);
+
+                                                    if (finalNum > funcCount) break;
 
                                                     printf("Fast Travel to function # %lu\n", finalNum);
 
@@ -5875,7 +5933,109 @@ int setPriv() {
 
 }
 
+int slpWalkDisk(char* path) {
+    FILE* f = fopen(path, "rb");
+    fseek(f, 0, SEEK_END);
+    int size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    unsigned char* slp = malloc(size);
+    fread(slp, 1, size, f);
+
+    int i = 0;
+    int importCount = 0;
+    puts("Import List:\n");
+    while (1) {
+        Imports* import = slp + (i * sizeof(Imports));
+        if (import->name[0] == 'C' && import->name[1] == NULL ) break;                  // Break on found Module
+        printf("%s\n", import->name);
+        i++;
+        importCount++;
+    }
+    
+    //importCount -= 1;           // Go back one before Module was found with '.'
+    int ModuleOffset = importCount * sizeof(Imports);
+    int j = 0;
+    puts("\nModules:");
+    while (1) {
+        Dlls* module = slp + ModuleOffset + j * sizeof(Dlls);
+
+        if (module->modName[0] != 'C') break;
+
+        wprintf(L"%ws\n", module->modName);
+        j++;
+    }
+
+    for (int s=0; s < 500; s++) {       // Increase 
+
+        function* functions = slp + ModuleOffset + j * sizeof(Dlls) + s * sizeof(function);
+
+        printf("%lu Begin: %p\t End: %p\tType: %02X\n", s, functions->begin, functions->end, functions->type);
+
+        for (int i=0; i < 80; i++) {
+        if (!functions->op[i].address) break;
+        printf("%s\n", functions->op[i].asm);
+        }
+
+    }
+    return 0;
+}
+
+int checkForSlp(char* path) {
+    int size = mystrlen(path);
+    if (path[size - 3] != 's') return 0;
+    if (path[size - 2] != 'l') return 0;
+    
+    slpWalkDisk(path);
+    getchar();
+    return 1;
+}
+int checkForDll(wchar_t* path) {
+    int size = wcslen(path);
+
+    if (path[size - 3] != 'd') return 0;
+    if (path[size - 2] != 'l') return 0;
+    if (path[size - 1] != 'l') return 0;
+
+    writeCon("[IMPORTS]:\n");
+    dllImports(path);
+    writeCon("[EXPORTS]:\n");
+    dllExports(path);
+    getchar();
+    return 1;
+}
+
 int wmain(int argc, wchar_t* argv[]) {
+
+    if (argc < 2) {
+        writeCon("\033[35mGlyph - Remote debugger engine by Sleepy\033[0m\n");
+        logo();
+        writeCon("\x1b[92mUsage:\x1b[0m\n-c <Remote process name> ex. Notepad.exe (ATTACH)\n<path to executable> ex. C:\\Windows\\System32\\notepad.exe start(START)\n");
+        writeCon("-l (LIST)\n");
+        writeCon("-open <Path>\n");
+        writeCon("-b <path> (Entry break)\n");
+
+        writeCon("\n\x1b[92mDLL parsing:\x1b[0m\n-DLL <path to DLL> -imports\n-DLL <path to DLL> -exports\n");
+
+        writeCon("\n\x1b[92mELF parsing:\x1b[0m\n-ELF <path to .so>\n");
+
+        writeCon("run with -help for more help\n");
+
+        return 0;
+    }
+
+    char cArg[MAX_PATH];
+    wideToChar(argv[1], &cArg);
+    int res = checkForSlp(cArg);
+    if (res == 1) return 0;
+
+    int dllres = checkForDll(argv[1]);
+    if (dllres == 1) return 0;
+
+    // Initialize Capstone
+    if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
+        writeCon("Failed to initialize Capstone\n");
+        return -1;
+    }
 
     for (int i=0; i < 500; i++) {
         remoteDLLInfo[i].address = 00000000;
@@ -5900,23 +6060,6 @@ int wmain(int argc, wchar_t* argv[]) {
 
     LPVOID fiberMain = ConvertThreadToFiber(NULL); 
     LPVOID debugFiber = CreateFiber(0, debug, argv[1]);
-
-    if (argc < 2) {
-        writeCon("\033[35mGlyph - Remote debugger engine by Sleepy\033[0m\n");
-        logo();
-        writeCon("\x1b[92mUsage:\x1b[0m\n-c <Remote process name> ex. Notepad.exe (ATTACH)\n<path to executable> ex. C:\\Windows\\System32\\notepad.exe start(START)\n-c <process> -b (BREAKPOINT)\n");
-        writeCon("-l (LIST)\n");
-        writeCon("-open <Path> (optional: -open <Path> -suspended)(start a process)\n");
-        writeCon("-c <ProcName> -b (CC Breakpoint, must install a handler)\n");
-
-        writeCon("\n\x1b[92mDLL parsing:\x1b[0m\n-DLL <path to DLL> -imports\n-DLL <path to DLL> -exports\n");
-
-        writeCon("\n\x1b[92mELF parsing:\x1b[0m\n-ELF <path to .so>\n");
-
-        writeCon("run with -help for more help\n");
-
-        return 0;
-    }
 
     if (wcscmp(argv[1], L"-l") == 0) {
         listProcesses();
@@ -5962,24 +6105,21 @@ int wmain(int argc, wchar_t* argv[]) {
 
     }
 
-    if (wcscmp(argv[1], L"-open") == 0) {
-
-        if (argv[3]) {
-
-         STARTUPINFO si = { sizeof(si) };
-         PROCESS_INFORMATION pi = { 0 };
-        if (!CreateProcessW(argv[2], NULL, NULL, NULL, 0, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
-            writeCon("Error creating process\n");
-            return 1;
-        } else {
-            writeCon("Process created! and suspended, -c <ProcName> to connect\n");
-            return 0;
-        }
-
+    if (wcscmp(argv[1], L"-b") == 0) {
+        if (argc < 3) return 0;
+        writeCon("Breaking at the Entry\n");
+        int procId = BREAKENTRY(argv[2]);
+        printf("\n\x1b[92mProcess has been neutered reconnect at [PID: %lu]\x1b[0m\n", procId);
+        Sleep(1000);
+        return 0;
     }
 
-         STARTUPINFO si = { sizeof(si) };
-         PROCESS_INFORMATION pi = { 0 };
+    if (wcscmp(argv[1], L"-open") == 0) {
+
+        if (argc < 3) return 0;
+
+        STARTUPINFO si = { sizeof(si) };
+        PROCESS_INFORMATION pi = { 0 };
         if (!CreateProcessW(argv[2], NULL, NULL, NULL, 0, 0, NULL, NULL, &si, &pi)) {
             printf("Error creating process %lu\n", GetLastError());
             return 1;
@@ -6039,5 +6179,6 @@ int wmain(int argc, wchar_t* argv[]) {
 
 }
 
+    cs_close(&handle);  // shutdown capstone for clean shutdown
     return 0;
 }
