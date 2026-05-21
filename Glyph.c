@@ -26,6 +26,61 @@ int patchFallback() { return 1; }; // Return 1 if fallback is called, means pebP
 
 CONTEXT context;
 
+#define IOCTL_GET_MODULES CTL_CODE(FILE_DEVICE_UNKNOWN, 0x806, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+typedef struct KernelModules {
+    char name[64];
+    UINT64 address;
+} KernelModules;
+
+int kernModules() {
+
+    HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        printf("Failed to open driver %u\n", GetLastError());
+        return 1;
+    }
+
+    KernelModules* km = malloc(180 * sizeof(KernelModules));  // Max of 128
+
+    unsigned long res = 0;
+    DeviceIoControl(h, IOCTL_GET_MODULES, 0, 0, km, 180 * sizeof(KernelModules), &res, 0);
+
+    for (int i=0; i < 180; i++) {
+        printf("%s - 0x%p\n", km[i].name, km[i].address);
+    }
+
+    printf("res %lu\n", res);
+
+    free(km);
+
+}
+
+#define IOCTL_GET_SECTIONS CTL_CODE(FILE_DEVICE_UNKNOWN, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS)
+typedef struct outSection {
+    char name[32];
+    UINT64 address;
+    ULONG size;
+} outSection;
+
+outSection* getKernelSections() {
+
+    HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        printf("Failed to open driver %u\n", GetLastError());
+        return 1;
+    }
+
+    outSection* in = malloc(15 * sizeof(outSection));
+    unsigned long ret = 0;
+    DeviceIoControl(h, IOCTL_GET_SECTIONS, 0, 0, in, 15 * sizeof(outSection), &ret, 0);
+
+    return in;
+
+}
+
 // struct going into kernel
 typedef struct SEND {
         UINT64 address;
@@ -85,6 +140,30 @@ int KkernelRead(void* address, int Size) {
     for (int i=0; i < Size; i++) {
         printf("%02X ", out[i]);
     }
+
+    // temp
+    unsigned char SSDTENTRYDELIMETER[] = {0x0F, 0x01, 0xF8, 0x49, 0x89, 0xCA};
+
+    int found = 0;
+    for (int i=0; i < Size; i++) {
+
+            if (out[i] != SSDTENTRYDELIMETER[0]) continue;
+            if (out[i+1] != SSDTENTRYDELIMETER[1]) continue;
+            if (out[i+2] != SSDTENTRYDELIMETER[2]) continue;
+            // if (out[i+3] != SSDTENTRYDELIMETER[3]) continue;
+            // if (out[i+4] != SSDTENTRYDELIMETER[4]) continue;
+            // if (out[i+5] != SSDTENTRYDELIMETER[5]) continue;
+
+            printf("KiSystemCall64 found at 0x%p in the .text at RVA %p follow call\n", out + i, (DWORD)((out + i) - out));
+
+            for (int z=0; z < 30; z++) {
+                printf("%02X ", out[i+z]);
+            }
+            printf("\n");
+
+
+    }
+    //
 
     free(out);
     return 0;
@@ -501,17 +580,17 @@ typedef struct _WIN_CERTIFICATE
 
 // storing all imports and its address into a struct
 typedef struct {
-    char name[100];
+    char name[128];
     FARPROC address;
 } Imports;
+Imports imports[500];
+size_t countImport = 0;
 
 typedef struct {
-    wchar_t modName[200];
+    wchar_t modName[MAX_PATH];
     FARPROC modAddress;
 } Dlls;
 
-Imports* imports = NULL;
-size_t countImport = 0;
 // using cpuid to pull CPU vendor name
 int getCPUVendor() {
 
@@ -639,7 +718,6 @@ int charToWide(char* string, wchar_t* out) {
     wprintf(L"%ws\n", out);
     return 0;
 }
-
 
 int Score; // Globally Function tracking
 BOOL MalCheck(char* funcName) {
@@ -1003,7 +1081,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                 unsigned char rawCall[999];
                 if (!ReadProcessMemory(hProcess, (void*)target, &rawCall, sizeof(rawCall), NULL)) {
                     printf("Error reading memory %lu - %p\n", GetLastError(), bytes);
-                    break;
+                    continue;
                 }
 
                 int newCount = cs_disasm(handle, bytes, sizeof(rawCall), target, 0, &insn2);
@@ -1106,113 +1184,29 @@ BOOL getSystemInfo() {
     return 0;
 }
 
-IMAGE_THUNK_DATA thunkData;
-
-// Helper Remote to get VA
-UINT RvaToFileOffset(HANDLE hProcess, BYTE* baseAddress, UINT rva) {
-    IMAGE_DOS_HEADER dh;
-    if (!ReadProcessMemory(hProcess, baseAddress, &dh, sizeof(IMAGE_DOS_HEADER), NULL)) {
-        printf("Error reading DOS header\n");
-        return -1;
-    }
-
-    IMAGE_NT_HEADERS ntHeaders;
-    if (!ReadProcessMemory(hProcess, baseAddress + dh.e_lfanew, &ntHeaders, sizeof(IMAGE_NT_HEADERS), NULL)) {
-        printf("Error reading NT headers\n");
-        return -1;
-    }
-
-    IMAGE_SECTION_HEADER* sections = (IMAGE_SECTION_HEADER*)malloc(sizeof(IMAGE_SECTION_HEADER) * ntHeaders.FileHeader.NumberOfSections);
-    if (!sections) {
-        printf("Memory allocation failed\n");
-        return -1;
-    }
-
-    DWORD sectionOffset = dh.e_lfanew + offsetof(IMAGE_NT_HEADERS, OptionalHeader) + ntHeaders.FileHeader.SizeOfOptionalHeader;
-
-    if (!ReadProcessMemory(hProcess, baseAddress + sectionOffset, sections,
-                           sizeof(IMAGE_SECTION_HEADER) * ntHeaders.FileHeader.NumberOfSections, NULL)) {
-        printf("Error reading section headers\n");
-        free(sections);
-        return -1;
-    }
-
-    
-    for (int i = 0; i < ntHeaders.FileHeader.NumberOfSections; ++i) {
-        IMAGE_SECTION_HEADER section = sections[i];
-        if (rva >= section.VirtualAddress && rva < section.VirtualAddress + section.Misc.VirtualSize) {
-            free(sections);
-            return section.PointerToRawData + (rva - section.VirtualAddress);
-        }
-    }
-
-    free(sections);
-    return -1; 
-}
-
 //Helper to get VA
 BYTE* VAFromRVA(DWORD rva, PIMAGE_NT_HEADERS nt, BYTE* base) {
     PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(nt);
-
-    //printf("hello\n");
     for (int i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
         DWORD sectionVA = section->VirtualAddress;
         DWORD sectionSize = section->Misc.VirtualSize;
-           // printf("hello2\n");
-
         if (rva >= sectionVA && rva < (sectionVA + sectionSize)) {
             return base + section->PointerToRawData + (rva - sectionVA);
         }
     }
-
     return NULL;
 }
 
-size_t capacity = 0;
-// making Dynamic struct for imports
 void addImport(char* funcName, FARPROC addr) {
-    if (countImport >= capacity) {
-        capacity = (capacity == 0) ? 4 : capacity * 2;
-        imports = realloc(imports, capacity * sizeof(Imports));
-        if (!imports) {
-            printf("Memory allocation failed\n");
-            exit(1);
-        }
-    }
-
+    if (countImport >= 499) return 1;   // probably never will max out
     strncpy(imports[countImport].name, funcName, sizeof(imports[countImport].name) - 1);
-       
-    //printf("func: %s\n", imports[countImport].name);
-
     imports[countImport].address = addr;
     countImport++;
+    return 0;
 }
 
-size_t modCapacity = 0;
-Dlls* modules;
+Dlls modules[300];
 size_t countModules = 0;
-// making Dynamic struct for Modules
-void addModule(wchar_t* funcName, FARPROC addr) {
-
-    if (!funcName) return;
-
-    if (countModules >= modCapacity) {
-        modCapacity = (modCapacity == 0) ? 4 : modCapacity * 2;
-        modules = realloc(modules, modCapacity * sizeof(Dlls));
-        if (!modules) {
-            printf("Memory allocation failed\n");
-            exit(1);
-        }
-    }
-
-    // copying funcName buffer into the global modules struct, see line 327
-    wcscpy_s(modules[countModules].modName, 256, funcName);
-
-    // Setting address
-    modules[countModules].modAddress = addr;
-
-    countModules++;
-}
 
 // Listing all running proc
 BOOL listModules() {
@@ -1243,7 +1237,7 @@ typedef struct {
     void* address;
 } HookedFunctions;
 
-HookedFunctions* hooked;
+HookedFunctions hooked[100];
 int counthooked = 0;   // Global
 
 int breakpointSet = 0; // Global
@@ -1257,7 +1251,6 @@ if (remoteDLL) {
 baseAddress = remoteDLL;
 } else {
 baseAddress = peb.Base;
-hooked = malloc(50 * sizeof(HookedFunctions));
 }
 
 if (peb.Base == 0) return 1;
@@ -1318,7 +1311,6 @@ if (!ReadProcessMemory(hProcess, importDescAddr, &id, sizeof(IMAGE_IMPORT_DESCRI
     printf("error reading the import descriptor\n");
     return 1;
 }
-
 
 //Check
 if (id.Name == 0) break;
@@ -1392,14 +1384,8 @@ while (TRUE) {
 
         if (remoteDLL == 0) {
 
+        // Made this tighter
         addImport(importByName->Name, funcAddr);
-
-        // current num * 100
-       // int currentOffset = i * 100;
-
-       // const char buff[150];
-       // snprintf(buff, 149, "%s-%p", importByName->Name, (void*)funcAddr);
-       // alloc(AllocatedRegion, offsetHandles + 300 + currentOffset, buff);
         
         BYTE hookedBytes[5];
         ReadProcessMemory(hProcess, funcAddr, &hookedBytes, sizeof(hookedBytes), NULL);
@@ -1412,12 +1398,13 @@ while (TRUE) {
 
             hooked[counthooked].address = imports[i].address;
 
+            if (counthooked <= 99) {
             counthooked++;
+            }
+
         }
 
-    }
-
-
+        }
 
         BYTE patch[10];
         memset(patch, 0xC3, sizeof(patch));
@@ -1486,7 +1473,7 @@ exports *export;
 
 PVOID ntdllBase;
 DWORD exportcount;
-int getRemoteExports(HANDLE hProcess, void* baseAddress, char* name) {
+void* getRemoteExports(HANDLE hProcess, void* baseAddress, char* name) {
 
 //reading dos header
 IMAGE_DOS_HEADER dh;
@@ -1593,6 +1580,8 @@ for (int i=0; i < exportcount; i++) {
             }
             printf("\n");
         }
+
+        return (void*)((BYTE*)baseAddress + rva);
     }
 
 }
@@ -1939,7 +1928,6 @@ DWORD size = oh.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size;
 _IMAGE_RUNTIME_FUNCTION_ENTRY* entries = malloc(size);
 ReadProcessMemory(hProcess, baseAddress + rva, entries, size, NULL);
 
-
 // Fill struct
 funcCount = size / sizeof(_IMAGE_RUNTIME_FUNCTION_ENTRY);
 functions = malloc(funcCount * sizeof(function));
@@ -2074,23 +2062,16 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
     
     // wow this fixed a lot, the list wasnt populated / moved this before PEB
     // wait for peb to load for new process only
-
     if (isStartup == 1) {
     Sleep(1000);
     }
 
     HMODULE hNtDll = GetModuleHandle("ntdll.dll");
-    if (!hNtDll) {
-        printf("Failed to load ntdll.dll\n");
-        return FALSE;
-    }
 
     pNtQueryInformationProcess NtQueryInformationProcess = (pNtQueryInformationProcess)GetProcAddress(hNtDll, "NtQueryInformationProcess");
-    if (!NtQueryInformationProcess) return FALSE;
-
     PROCESS_BASIC_INFORMATION proc = {0};
-
     ULONG returnlen;
+
     NTSTATUS status = NtQueryInformationProcess(hProcess, ProcessBasicInformation, &proc, sizeof(PROCESS_BASIC_INFORMATION), &returnlen);
     if (status != 0) {
         return FALSE;
@@ -2102,13 +2083,12 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
     peb.pebaddr = proc.PebBaseAddress;
 
     MY_PEB_LDR_DATA ldrData;
-    if (ReadProcessMemory(hProcess, proc.PebBaseAddress, &pbi, sizeof(pbi), NULL)) {
-        printf("\n\x1b[92m[+]\x1b[0m process ID: %lu\n", (unsigned long)proc.UniqueProcessId);
-    } else {
+    if (!ReadProcessMemory(hProcess, proc.PebBaseAddress, &pbi, sizeof(pbi), NULL)) {
         printf("Failed to read PEB from the target process (Error %lu)\n", GetLastError());
         return FALSE;
     }
 
+    printf("\n\x1b[92m[+]\x1b[0m process ID: %lu\n", (unsigned long)proc.UniqueProcessId);
     printf("\x1b[92m[+]\x1b[0m Peb address: 0x%p\t", proc.PebBaseAddress);
 
     void* heap = (unsigned char*)proc.PebBaseAddress + 0x30;
@@ -2122,11 +2102,13 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
     peb.BeingDebugged = pbi.BeingDebugged; //neat
     peb.params = pbi.ProcessParameters; //storing address
 
+    // lol this comment 
     //remember even if its a Buffer in memory you have to read it to a WCHAR for storing like shown this is key
     RTL_USER_PROCESS_PARAMETERS parameters;
     struct myparams myparams;
     
-    myparams.fullPath = (WCHAR*)malloc(1068 * sizeof(WCHAR));
+    unsigned char SCRATCH[MAX_PATH];
+    myparams.fullPath = SCRATCH;
 
     if (!ReadProcessMemory(hProcess, pbi.ProcessParameters, &parameters, sizeof(RTL_USER_PROCESS_PARAMETERS), NULL)) {
         printf("error reading params\n");
@@ -2148,7 +2130,6 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
     wprintf(L"\x1b[92m[+]\x1b[0m Command Line: %ls\n", cmd);
     
     size_t bytesread;
-
     if (!ReadProcessMemory(hProcess, (LPCVOID)pbi.Ldr , &ldrData, sizeof(ldrData), &bytesread)) {
             printf("error getting ldr, retry... %lu - %lu\n", GetLastError(), bytesread);
             return FALSE;
@@ -2156,10 +2137,9 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
     
     printf("\x1b[92m[+]\x1b[0m LDR Address: 0x%p\n", ldrData);
 
-       // printf("\n\033[35m+-----------Modules-----------+\033[0m\n");
-     LIST_ENTRY* head = &ldrData.InLoadOrderModuleList;
-     LIST_ENTRY* currentEntry = head->Flink;
-    
+    LIST_ENTRY* head = &ldrData.InLoadOrderModuleList;
+    LIST_ENTRY* currentEntry = head->Flink;
+
     while (currentEntry != head) {
         
         DWORD bytes;
@@ -2187,8 +2167,10 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
         // Patching Infinite loop bug on some Windows versions
         if (ldrEntry.DllBase == 0x0) break;
 
-        // Adding to a struct
-        addModule(name, ldrEntry.DllBase);
+        // Much cleaner than before
+        wcscpy_s(modules[countModules].modName, MAX_PATH, name);
+        modules[countModules].modAddress = ldrEntry.DllBase;
+        countModules++;
 
         // remote dll data struct
         checkRemoteDLL(hProcess, ldrEntry.DllBase, 0);
@@ -2198,6 +2180,8 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
         }
 
         currentRemoteDllCount++;
+
+        if (countModules >= 299) break; // Proablably never will hit this MAX dlls
 
         currentEntry = ldrEntry.InLoadOrderLinks.Flink;
        
@@ -4029,7 +4013,9 @@ int Editor(void* hProcess) {
 
     printf("Editor Usage:\n[*]Ctrl+P is local load\n[*]Ctrl+I to Inject into debugee\n[*]Exit to Abort\n");
     FreeLibrary(cmdMod);
-    int res = edit();
+    int res = 0;
+    
+    res = edit();
 
     // Local ctrl+p
     if (res == 1) {
@@ -4541,6 +4527,116 @@ while (GetMessage(&msg, NULL, 0, 0)) {
 return 0;
 }
 
+void* getModuleFunctionBoundaries(void* hProcess, int getBound, uint64_t* funAddress) {
+
+    for (int i=0; i < countModules; i++) {
+        if (wcscmp(modules[i].modName, L"C:\\Windows\\SYSTEM32\\ntdll.dll") == 0) {
+            ntdllBase = modules[i].modAddress;
+        }
+    }
+
+    void* ki = getRemoteExports(hProcess, ntdllBase, "KiUserInvertedFunctionTable");
+
+    unsigned char tableBuff[1028];
+    if (!ReadProcessMemory(hProcess, ki, &tableBuff, sizeof(tableBuff), 0)) {
+        return 1;
+    }
+
+    int lastQuit = 0;
+    int modTrack = 2;
+    void* baseAddress = 0;
+    for (int i=1; ; i++) {
+
+    if (i == 2) {   // This gets the base address bc base is entry #2
+    baseAddress = *(void**)((unsigned char*)ki + (0x18 * i));
+    }
+
+    int isGood = 0;
+    for (int j=0; j < countModules; j++) {
+        if (modules[j].modAddress == *(void**)((unsigned char*)ki + (0x18 * i))) {
+        wprintf(L"About to dump %ws [0x%p]...\n", modules[j].modName, modules[j].modAddress);
+        if (getBound == 1 && !funAddress) { getchar(); }
+        isGood = 1;
+        }
+    }
+
+    void* module = *(void**)((unsigned char*)ki + (0x18 * i));
+
+    if (module == 0x00) break;  // Ending
+    if (!isGood) continue;
+    
+    printf("Module Base: 0x%p\n", module);
+    printf("+++++++++++++++++\n");
+
+    if (getBound != 1) continue;    // stop here if dont want function boundaries
+
+    _IMAGE_RUNTIME_FUNCTION_ENTRY* entry = *(void**)((unsigned char*)ki + ((0x18 * i) - 8));
+
+    for (int j=0; ; j++) {
+
+        if ((unsigned char*)module + entry[j].BeginAddress == (unsigned char*)module + entry[j].EndAddress) break;
+
+        if (funAddress == 0) {
+        printf("0x%p - 0x%p\tRVA: %p\n", (unsigned char*)module + entry[j].BeginAddress, (unsigned char*)module + entry[j].EndAddress, entry[j].BeginAddress);
+        readRawAddr(hProcess, (unsigned char*)module + entry[j].BeginAddress, 999, 0, 0);
+        }
+
+        if (funAddress != 0) {
+        if (((unsigned char*)module + entry[j].BeginAddress) == funAddress) {
+            printf("0x%p - 0x%p\tRVA: %p\n", (unsigned char*)module + entry[j].BeginAddress, (unsigned char*)module + entry[j].EndAddress, entry[j].BeginAddress);
+            readRawAddr(hProcess, (unsigned char*)module + entry[j].BeginAddress, 999, 0, 0);
+            if (endWalk() == 1) return 0;
+        }
+        continue;
+        }
+        
+        if (endWalk() == 1) {
+            if (lastQuit == 1) return 0;
+            lastQuit = 1;
+            break;
+        }
+
+        lastQuit = 0; 
+
+    }
+
+    }
+
+    return baseAddress;
+}
+
+int checkLnk(wchar_t* path) {
+
+    FILE* f = _wfopen(path, L"rb");
+    if (!f) return 0;
+
+    fseek(f, 0, SEEK_END);
+    int size = ftell(f);
+    fseek(f, 0, SEEK_SET);  
+    unsigned char* mem = malloc(size);
+    fread(mem, size, 1, f); 
+
+    printf(".lnk Flags: %lu\n", *(DWORD*)(mem + 0x14));
+    WORD idListSize = *(WORD*)(mem + 0x4C);    
+    unsigned char* start = (mem + 0x4C + 2);
+
+    WORD nextListSize = *(WORD*)(start + idListSize);    
+    unsigned char* nextStart = (unsigned char*)((start + idListSize + 2) + nextListSize);
+
+    WORD nameLen = *(WORD*)(nextStart);
+
+    // int i;
+    // for (i=0; ; i+=2) {
+    //     if (nextStart[i] == 0x2D) break;
+    //     printf("%c", nextStart[i]);
+    // }
+    // printf("\n");
+
+    wprintf(L"%ws\n", nextStart);
+
+    return 0;
+}
+
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -4695,7 +4791,7 @@ BOOL WINAPI debug(LPCVOID param) {
                             } 
                             
                             // If loaded dont do startup also this catches the !edit hot swap
-                            if (cmdPacksStartup = 1 && cmdMod){
+                            if (cmdPacksStartup == 1 && cmdMod){
                                 loadCmdPack(buff, 0, 0);
                             }
                             
@@ -5789,6 +5885,44 @@ BOOL WINAPI debug(LPCVOID param) {
                                             continue;
                                         }
 
+                                        else if (strncmp(buff, "!bound", 6) == 0) {
+
+                                            printf("\nTry: !bound <address> | !bound all\n");
+                                            char inBuff[32];
+                                            for (int i=0; i < 32; i++) {
+                                                inBuff[i] = 0x00;
+                                            }
+
+                                    
+                                            for (int i=0; i < 32; i++) {
+                                            if (buff[i] == 0x00) break;
+                                                if (buff[i] == 0x20) {
+                                                    for (int j=0; ; j++) {
+                                                        if (buff[i+1+j] == 00) break;
+                                                        inBuff[j] = buff[i+1+j];
+                                                    }
+                                                }
+                                            }
+
+                                            if (inBuff !=0 && mystrcmp(inBuff, "all") == 0) {
+                                                getModuleFunctionBoundaries(hProcess, 1, 0);
+                                                continue;
+                                            }
+
+                                            uint64_t address = 0;
+                                            sscanf(inBuff, "%llx", &address);
+
+                                            if (address == 0) {
+                                                writeCon("Invalid address\n");
+                                                address = 0x01;
+                                            }
+
+                                            printf("Address: 0x%p\n", address);
+
+                                            getModuleFunctionBoundaries(hProcess, 1, address);
+                                            continue;
+                                        }
+
                                         else if (mystrcmp(buff, "!kdump") == 0) {
                                             
                                             writeCon("Which address to read?\n");
@@ -5854,6 +5988,20 @@ BOOL WINAPI debug(LPCVOID param) {
                                             int size = atoi(numBuff);
 
                                             KkernelRead(addr, size);
+                                        }
+
+                                        else if (mystrcmp(buff, "#kvar") == 0) {
+
+                                            outSection* in = getKernelSections();
+
+                                            for (int i=0; i < 15; i++) {
+                                            if (in[i].address == 00) break;
+                                            printf("Name: %s\nAddress: 0x%p\nSize: %lu\n+++++++++++++++++++++++++++++++++\n", in[i].name, in[i].address, in[i].size);
+                                            }
+                                        }
+
+                                        else if (mystrcmp(buff, "#kmod") == 0) {
+                                            kernModules();
                                         }
 
                                         else if (mystrcmp(buff, "!rtext") == 0) {
@@ -6003,6 +6151,18 @@ int checkForDll(wchar_t* path) {
     getchar();
     return 1;
 }
+int checkForLnk(wchar_t* path) {
+    int size = wcslen(path);
+
+    if (path[size - 3] != 'l') return 0;
+    if (path[size - 2] != 'n') return 0;
+    if (path[size - 1] != 'k') return 0;
+
+    checkLnk(path);
+
+    getchar();
+    return 1;
+}
 
 int wmain(int argc, wchar_t* argv[]) {
 
@@ -6030,6 +6190,9 @@ int wmain(int argc, wchar_t* argv[]) {
 
     int dllres = checkForDll(argv[1]);
     if (dllres == 1) return 0;
+
+    int lnkres = checkForLnk(argv[1]);
+    if (lnkres == 1) return 0;
 
     // Initialize Capstone
     if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
