@@ -586,11 +586,6 @@ typedef struct {
 Imports imports[500];
 size_t countImport = 0;
 
-typedef struct {
-    wchar_t modName[MAX_PATH];
-    FARPROC modAddress;
-} Dlls;
-
 // using cpuid to pull CPU vendor name
 int getCPUVendor() {
 
@@ -1205,6 +1200,19 @@ void addImport(char* funcName, FARPROC addr) {
     return 0;
 }
 
+int currentDllExportDump = 0;
+typedef struct {
+    char name[100];
+    void* address;
+} exports;
+
+typedef struct {
+    wchar_t modName[MAX_PATH];
+    FARPROC modAddress;
+    exports* export;
+    unsigned long exportCount;
+} Dlls;
+
 Dlls modules[300];
 size_t countModules = 0;
 
@@ -1464,55 +1472,35 @@ for (int i=0; i < countImport; i++) {
 return 0;
 }
 
-typedef struct {
-    char name[100];
-    void* address;
-} exports;
-
-exports *export;
-
 PVOID ntdllBase;
 DWORD exportcount;
-void* getRemoteExports(HANDLE hProcess, void* baseAddress, char* name) {
+void* getRemoteExports(HANDLE hProcess, void* baseAddress, char* name, int startUp) {
 
-//reading dos header
 IMAGE_DOS_HEADER dh;
 if (!ReadProcessMemory(hProcess, baseAddress, &dh, sizeof(IMAGE_DOS_HEADER), NULL)) {
     printf("error reading memory of process ID\n");
     return 1;
 }
 
-//checks for a valid PE file
-if (dh.e_magic != IMAGE_DOS_SIGNATURE) {
-    return 1;
-}
+if (dh.e_magic != IMAGE_DOS_SIGNATURE) return 1;
 
 IMAGE_NT_HEADERS64 nt;
-if (!ReadProcessMemory(hProcess, (BYTE*)baseAddress + dh.e_lfanew, &nt, sizeof(IMAGE_NT_HEADERS), NULL)) {
-    return 1;
-}
+if (!ReadProcessMemory(hProcess, (BYTE*)baseAddress + dh.e_lfanew, &nt, sizeof(IMAGE_NT_HEADERS), NULL)) return 1;
 
-//optional headers
 IMAGE_OPTIONAL_HEADER oh;
-if (!ReadProcessMemory(hProcess, (BYTE*)baseAddress + dh.e_lfanew + offsetof(IMAGE_NT_HEADERS, OptionalHeader), &oh, sizeof(IMAGE_OPTIONAL_HEADER), NULL)) {
-    return 1;
-}
+if (!ReadProcessMemory(hProcess, (BYTE*)baseAddress + dh.e_lfanew + offsetof(IMAGE_NT_HEADERS, OptionalHeader), &oh, sizeof(IMAGE_OPTIONAL_HEADER), NULL)) return 1;
 
 BYTE* importDescAddr = (BYTE*)baseAddress + oh.DataDirectory[0].VirtualAddress;
 
 IMAGE_EXPORT_DIRECTORY id;
-if (!ReadProcessMemory(hProcess, importDescAddr, &id, sizeof(IMAGE_EXPORT_DIRECTORY), NULL)) {
-    printf("error reading the import descriptor\n");
-    return 1;
-}
+if (!ReadProcessMemory(hProcess, importDescAddr, &id, sizeof(IMAGE_EXPORT_DIRECTORY), NULL)) return 1;
 
-
-printf("Walking %p...\n", (BYTE*)baseAddress + id.Name);
+//printf("Walking %p...\n", (BYTE*)baseAddress + id.Name);
 
 exportcount = id.NumberOfNames;
 
 if (exportcount == 0) {
-    printf("No exports but ENTRY is 0x%p\n", (void*)((BYTE*)baseAddress + oh.AddressOfEntryPoint));
+    //printf("No exports but ENTRY is 0x%p\n", (void*)((BYTE*)baseAddress + oh.AddressOfEntryPoint));
     return 0;
 }
 
@@ -1520,7 +1508,10 @@ DWORD* addressOfNames = (DWORD*)((BYTE*)baseAddress + id.AddressOfNames);
 DWORD* AddressOfFunctions = (DWORD*)((BYTE*)baseAddress + id.AddressOfFunctions);
 WORD* ordinaladdr = (WORD*)((BYTE*)baseAddress + id.AddressOfNameOrdinals);
 
-export = malloc(exportcount * sizeof(exports));
+if (startUp == 1) {
+modules[countModules].export = malloc(exportcount * sizeof(exports));
+modules[countModules].exportCount = exportcount;
+}
 
 for (int i=0; i < exportcount; i++) {
 
@@ -1545,8 +1536,11 @@ for (int i=0; i < exportcount; i++) {
     char nameBuff[100];
     ReadProcessMemory(hProcess, (BYTE*)baseAddress + nameRVA, &nameBuff, sizeof(nameBuff), NULL);
 
-    strcpy(export[i].name, nameBuff); // Storing into a struct
-    export[i].address = (BYTE*)baseAddress + rva;
+    if (startUp == 1) {
+    strcpy(modules[countModules].export[i].name, nameBuff); // Storing into a struct
+    modules[countModules].export[i].address = (BYTE*)baseAddress + rva;
+    continue;   // Stop here on startup
+    }
 
     if (mystrcmp(name, "") == 0 || !name) {
         printf("%s - 0x%p\n", nameBuff, (BYTE*)baseAddress + rva);
@@ -1682,7 +1676,7 @@ int findMZ(HANDLE hProcess) {
 
     if (MZ[0] == 'M' && MZ[1] == 'Z') {
         printf("MZ found at 0x%p\n", base);
-        getRemoteExports(hProcess, base, "");
+        getRemoteExports(hProcess, base, "", 0);
         if (endWalk() == 1) return 0;
         
     }
@@ -2170,7 +2164,10 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
         // Much cleaner than before
         wcscpy_s(modules[countModules].modName, MAX_PATH, name);
         modules[countModules].modAddress = ldrEntry.DllBase;
+
+        getRemoteExports(hProcess, ldrEntry.DllBase, "", 1);
         countModules++;
+
 
         // remote dll data struct
         checkRemoteDLL(hProcess, ldrEntry.DllBase, 0);
@@ -4527,6 +4524,62 @@ while (GetMessage(&msg, NULL, 0, 0)) {
 return 0;
 }
 
+int checkLnk(wchar_t* path) {
+
+    FILE* f = _wfopen(path, L"rb");
+    if (!f) return 0;
+
+    fseek(f, 0, SEEK_END);
+    int size = ftell(f);
+    fseek(f, 0, SEEK_SET);  
+    unsigned char* mem = malloc(size);
+    fread(mem, size, 1, f); 
+
+    printf(".lnk Flags: %lu\n", *(DWORD*)(mem + 0x14));
+    WORD idListSize = *(WORD*)(mem + 0x4C);    
+    unsigned char* start = (mem + 0x4C + 2);
+
+    WORD nextListSize = *(WORD*)(start + idListSize);    
+    unsigned char* nextStart = (unsigned char*)((start + idListSize + 2) + nextListSize);
+
+    WORD nameLen = *(WORD*)(nextStart);
+
+    // int i;
+    // for (i=0; ; i+=2) {
+    //     if (nextStart[i] == 0x2D) break;
+    //     printf("%c", nextStart[i]);
+    // }
+    // printf("\n");
+
+    wprintf(L"%ws\n", nextStart);
+
+    return 0;
+}
+
+int cmdCheckForImportString(char* buff) {
+    if (mystrlen(buff) < 3) return 1;
+     
+    for (int i=0; i < countImport; i++) {
+        if (mystrcmp(buff, imports[i].name) == 0) {
+            readRawAddr(hProcess, imports[i].address, 999, 0, 0);
+
+            for (int j=0; ; j++) {
+                if (remoteDLLInfo[j].address == 0x00) break;
+
+                if (remoteDLLInfo[j].textStart <= imports[i].address && remoteDLLInfo[j].textEnd >= imports[i].address) {
+                    printf("\nIMPORT: %s\t0x%p\n", imports[i].name, imports[i].address);
+                    printf("[!] RVA: %p\t", (unsigned long)((unsigned char*)imports[i].address - remoteDLLInfo[j].textStart));
+                    wprintf(L"[%ws]\n", remoteDLLInfo[j].dllName);
+                    return 0;
+                }
+            }
+
+        }
+    }
+
+    return 1;
+}
+
 void* getModuleFunctionBoundaries(void* hProcess, int getBound, uint64_t* funAddress) {
 
     for (int i=0; i < countModules; i++) {
@@ -4535,7 +4588,7 @@ void* getModuleFunctionBoundaries(void* hProcess, int getBound, uint64_t* funAdd
         }
     }
 
-    void* ki = getRemoteExports(hProcess, ntdllBase, "KiUserInvertedFunctionTable");
+    void* ki = getRemoteExports(hProcess, ntdllBase, "KiUserInvertedFunctionTable", 0);
 
     unsigned char tableBuff[1028];
     if (!ReadProcessMemory(hProcess, ki, &tableBuff, sizeof(tableBuff), 0)) {
@@ -4605,35 +4658,97 @@ void* getModuleFunctionBoundaries(void* hProcess, int getBound, uint64_t* funAdd
     return baseAddress;
 }
 
-int checkLnk(wchar_t* path) {
+int findLea(void* hProcess, unsigned char* address, int size, int loud) {
 
-    FILE* f = _wfopen(path, L"rb");
-    if (!f) return 0;
+    int leaCount = 0;
+    int realCount = 0;
+    unsigned char* buffer = malloc(size);
+    ReadProcessMemory(hProcess, address, buffer, size, 0);
+    
+    for (int i=0; i < size; i++) {
+        if (buffer[i] != 0x48 && buffer[i] != 0x49) continue;
+        if (buffer[i+1] != 0x8D) continue;
 
-    fseek(f, 0, SEEK_END);
-    int size = ftell(f);
-    fseek(f, 0, SEEK_SET);  
-    unsigned char* mem = malloc(size);
-    fread(mem, size, 1, f); 
+        unsigned int ripRel = (buffer[i+2]) << 0 | (buffer[i+3]) << 8 | (buffer[i+4]) << 16 | (buffer[i+5]) << 24;
+        
+        unsigned int currentRip = i+7;
 
-    printf(".lnk Flags: %lu\n", *(DWORD*)(mem + 0x14));
-    WORD idListSize = *(WORD*)(mem + 0x4C);    
-    unsigned char* start = (mem + 0x4C + 2);
+        uint64_t res = (uint64_t)((unsigned char*)address + currentRip + ripRel);
 
-    WORD nextListSize = *(WORD*)(start + idListSize);    
-    unsigned char* nextStart = (unsigned char*)((start + idListSize + 2) + nextListSize);
+        if (res <= codeRegions->codeBounds[0].end && res >= codeRegions->codeBounds[0].start) {
 
-    WORD nameLen = *(WORD*)(nextStart);
+        unsigned char tmp[50];
+        if (!ReadProcessMemory(hProcess, res, &tmp, sizeof(tmp), 0)) {
+            continue;
+        }
 
-    // int i;
-    // for (i=0; ; i+=2) {
-    //     if (nextStart[i] == 0x2D) break;
-    //     printf("%c", nextStart[i]);
-    // }
-    // printf("\n");
+        leaCount++;
 
-    wprintf(L"%ws\n", nextStart);
+        realCount++;
 
+        if (loud != 0) {
+        printf("current rip + rel32: 0x%p\n", (currentRip + ripRel));
+        printf("(%lu) [lea] found at 0x%p\n", realCount, address + (currentRip + ripRel));
+
+        for (int i=0; i < countImport; i++) {
+            if (imports[i].address == (void*)(address + (currentRip + ripRel))) {
+                printf("[!] IMPORT: %s\n", imports[i].name);
+                getchar();
+            }
+        }
+
+        if (tmp[0] == 'M' && tmp[0] == 'Z') {
+            printf("Loading a dll... check this\n");
+            getchar();
+        }
+
+        for (int j=0; j < 50; j++) {
+            printf("%02X ", tmp[j]);
+        }
+        printf("\n");
+        
+        }
+    
+    }
+
+    }
+
+    if (loud == 0) {
+        printf("Number of lea instructions: %lu\n", realCount);
+        getchar();
+        findLea(hProcess, address, size, 1);
+    }
+
+    free(buffer);
+    return 0;
+}
+
+typedef struct diffOut {
+    UINT64 address;
+    char name[128];
+} diffOut;
+
+int diffDiskNtdll(void* hProcess, void* ntdllBase) {
+
+    void* hDiff = LoadLibraryA("compareSyscalls.dll");
+    if (!hDiff) {
+        writeCon("Place compareSyscalls.dll into the working directory\n");
+        return 1;
+    }
+
+    typedef diffOut* (__stdcall* pdiffNtdll)(void*, void*);
+
+    pdiffNtdll get = (pdiffNtdll)GetProcAddress(GetModuleHandle("compareSyscalls.dll"), "diffNtdll");
+    
+    diffOut* in = get(hProcess, ntdllBase);
+    if (!in) return 1;
+
+    for (int i=0; i < 64; i++) {
+        if (!in[i].address) break;
+        printf("diff: %s [0x%p]\n", in[i].name, in[i].address);
+    }
+
+    FreeLibrary(hDiff);
     return 0;
 }
 
@@ -4963,12 +5078,16 @@ BOOL WINAPI debug(LPCVOID param) {
                                         }
 
                                         char bytes2Read[100];
-                                        writeCon("How many bytes to read?\n");
+                                        writeCon("How many bytes to read? (Press enter to read till end of function)\n");
                                         fgets(bytes2Read, 99, stdin);
 
                                         bytes2Read[strcspn(bytes2Read, "\n")] = '\0';
 
                                         DWORD bytesNum = strtoul(bytes2Read, NULL, 10);
+
+                                        if (bytesNum == 0) {
+                                            bytesNum = 999;
+                                        }
 
                                         // Read Raw function 
                                         if (!readRawAddr(hProcess, (LPVOID)addr, bytesNum, 0, 0)) {
@@ -5447,12 +5566,9 @@ BOOL WINAPI debug(LPCVOID param) {
                                             for (int i=0; i < countModules; i++) {                          
                                             if (i == 0) continue;
                                             if (modules[i].modAddress != finaladdr) continue;
-                                            getRemoteExports(hProcess, modules[i].modAddress, func);
+                                            getRemoteExports(hProcess, modules[i].modAddress, func, 0);
                                             }
 
-                                            // for (int j=0; j < exportcount; j++) {
-                                            //     printf("%s\n", export[j].name);
-                                            // }
                                             continue;
 
                                         }
@@ -5504,20 +5620,31 @@ BOOL WINAPI debug(LPCVOID param) {
                                                     break;
                                                 }
                                             }
+
+                                            int isInText = 0;
                                             for (int i=0; i < countModules; i++) {
                                                 if (modules[i].modAddress == address) { // If its a module base
                                                     wprintf(L"\033[31m[+]\033[0m Module: %ws\n", modules[i].modName);
                                                     break;
                                                 }
+
                                                 //Check which .text section it resides in
                                                 if (remoteDLLInfo[i].textEnd >= address && remoteDLLInfo[i].textStart <= address) {
                                                     int offset = (unsigned char*)address - remoteDLLInfo[i].textStart;
                                                     wprintf(L"\033[31m[+]\033[0m Module: %ws \033[31m[+]\033[0m RVA: 0x%p\n", remoteDLLInfo[i].dllName, offset);
+                                                    isInText = 1;
+                                                    break;
                                                 }
 
                                             }
 
                                             printf("\033[31m[+]\033[0m DUMP at 0x%p:\n", address);
+
+                                            if (isInText == 1) {
+                                                readRawAddr(hProcess, address, 999, 0, 0);
+                                                continue;
+                                            }
+
                                             readRawAddr(hProcess, address, 20, 0, 0);
                                             continue;
                                         }
@@ -5923,6 +6050,11 @@ BOOL WINAPI debug(LPCVOID param) {
                                             continue;
                                         }
 
+                                        else if (mystrcmp(buff, "!lea") == 0) {
+                                            int size = (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start;
+                                            findLea(hProcess, codeRegions->codeBounds[0].start, size, 0);
+                                        }
+
                                         else if (mystrcmp(buff, "!kdump") == 0) {
                                             
                                             writeCon("Which address to read?\n");
@@ -6042,7 +6174,26 @@ BOOL WINAPI debug(LPCVOID param) {
                                             continue;
                                         }
 
+                                        else if (mystrcmp(buff, "!diffDisk") == 0) {
+                                            diffDiskNtdll(hProcess, modules[1].modAddress);
+                                            continue;
+                                        }
+
                                         else {
+                                            if (cmdCheckForImportString(buff) == 0) continue;
+
+                                            int foundExp = 0;
+                                            for (int i=0; i < countModules; i++) {
+                                                for (int j=0; j < modules[i].exportCount; j++) { 
+                                                if (mystrcmp(buff, modules[i].export[j].name) == 0) {
+                                                    readRawAddr(hProcess, modules[i].export[j].address, 999, 0, 0);
+                                                    foundExp = 1;
+                                                }
+                                                }
+                                            }
+
+                                            if (foundExp != 0) continue;
+
                                             checkMatch(buff);
                                         }
                                     
