@@ -682,16 +682,17 @@ int wideLen(wchar_t* word) {
         if (word[i] == 00 && word[i+1] == 00) return i+1;
     }
 }
-int wideToChar(wchar_t* word, char* out) {
-
-    int size = wideLen(word);
+int wideToChar(wchar_t* word, char* out, int size) {
 
     for (int i=0; i < size; i++) {
-        if (word[i] == 00 && word[i+1] == 00) break;
+        if (word[i] == 00 && word[i+1] == 00) {
+            out[i] = 00;
+            break;
+        }
         if (word[i] == 00) continue;
         out[i] = word[i];
     }
-
+    
     return 0;
 }
 int charToWide(char* string, wchar_t* out) {
@@ -2051,6 +2052,8 @@ RemoteDLLSectionInfo remoteDLLInfo[500];
 
 int currentRemoteDllCount = 0;
 
+HASHMAP dllMap[1];
+
 // Peb :)
 BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWORD id) {
     
@@ -2168,6 +2171,9 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
         getRemoteExports(hProcess, ldrEntry.DllBase, "", 1);
         countModules++;
 
+        char out[128];
+        wideToChar(name, out, ldrEntry.FullDllName.Length);
+        insert(dllMap, &out, 0, ldrEntry.DllBase);
 
         // remote dll data struct
         checkRemoteDLL(hProcess, ldrEntry.DllBase, 0);
@@ -3562,6 +3568,8 @@ BOOL printHelp() {
 
     writeCon("!dll       - List all loaded modules\n");
 
+    writeCon("!bound     - List loader critical modules\n");
+
     writeCon("!rift      - Diff with previous .slp state file\n");
 
     writeCon("!tcp       - Get active tcp connections\n");
@@ -3607,6 +3615,8 @@ BOOL printHelp() {
     writeCon("?[Command]  - Get Info on a command\n");
 
     writeCon("0x????????  - Send an address and get info\n");
+
+    writeCon("Commandline Accepts: Imports, exports, dlls, addresses\n");
 
     writeCon("\n[!][Extras]\n!pebPatch          - patch glyphs peb\n");
 
@@ -4556,30 +4566,6 @@ int checkLnk(wchar_t* path) {
     return 0;
 }
 
-int cmdCheckForImportString(char* buff) {
-    if (mystrlen(buff) < 3) return 1;
-     
-    for (int i=0; i < countImport; i++) {
-        if (mystrcmp(buff, imports[i].name) == 0) {
-            readRawAddr(hProcess, imports[i].address, 999, 0, 0);
-
-            for (int j=0; ; j++) {
-                if (remoteDLLInfo[j].address == 0x00) break;
-
-                if (remoteDLLInfo[j].textStart <= imports[i].address && remoteDLLInfo[j].textEnd >= imports[i].address) {
-                    printf("\nIMPORT: %s\t0x%p\n", imports[i].name, imports[i].address);
-                    printf("[!] RVA: %p\t", (unsigned long)((unsigned char*)imports[i].address - remoteDLLInfo[j].textStart));
-                    wprintf(L"[%ws]\n", remoteDLLInfo[j].dllName);
-                    return 0;
-                }
-            }
-
-        }
-    }
-
-    return 1;
-}
-
 void* getModuleFunctionBoundaries(void* hProcess, int getBound, uint64_t* funAddress) {
 
     for (int i=0; i < countModules; i++) {
@@ -4749,6 +4735,28 @@ int diffDiskNtdll(void* hProcess, void* ntdllBase) {
     }
 
     FreeLibrary(hDiff);
+    return 0;
+}
+
+int cmdCheckForImportString(void* hProcess, char* buff, HASHMAP* map) {
+
+    ENTRY* res = read(map, buff);
+    if (res != 0) {
+    
+    readRawAddr(hProcess, res->address, 999, 0, 0);
+
+    for (int j=0; ; j++) {
+        if (remoteDLLInfo[j].address == 0x00) break;
+        if (remoteDLLInfo[j].textStart <= res->address && remoteDLLInfo[j].textEnd >= res->address) {
+            printf("\nIMPORT: %s\t0x%p\n", res->key, res->address);
+            printf("[!] RVA: %p\t", (unsigned long)((unsigned char*)res->address - remoteDLLInfo[j].textStart));
+            wprintf(L"[%ws]\n", remoteDLLInfo[j].dllName);
+            return 1;
+        }
+    }
+
+    }
+
     return 0;
 }
 
@@ -6180,10 +6188,17 @@ BOOL WINAPI debug(LPCVOID param) {
                                         }
 
                                         else {
-                                            if (cmdCheckForImportString(buff) == 0) continue;
+
+                                            ENTRY* res = read(dllMap, buff);    // Check for dll string
+                                            if (res != 0) {
+                                                getRemoteExports(hProcess, res->address, "", 0);
+                                                continue;
+                                            }
+
+                                            if (cmdCheckForImportString(hProcess, buff, map) != 0) continue; // check for import string
 
                                             int foundExp = 0;
-                                            for (int i=0; i < countModules; i++) {
+                                            for (int i=0; i < countModules; i++) {  // checking for export string last
                                                 for (int j=0; j < modules[i].exportCount; j++) { 
                                                 if (mystrcmp(buff, modules[i].export[j].name) == 0) {
                                                     readRawAddr(hProcess, modules[i].export[j].address, 999, 0, 0);
@@ -6194,7 +6209,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             if (foundExp != 0) continue;
 
-                                            checkMatch(buff);
+                                            checkMatch(buff);   // guesser
                                         }
                                     
                                     } else {
@@ -6335,7 +6350,7 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     char cArg[MAX_PATH];
-    wideToChar(argv[1], &cArg);
+    wideToChar(argv[1], &cArg, wideLen(argv[1]));
     int res = checkForSlp(cArg);
     if (res == 1) return 0;
 
