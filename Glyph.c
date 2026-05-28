@@ -884,7 +884,7 @@ typedef struct {
     DWORD size; 
     DWORD num;
     BYTE firstByte;
-    opstr op[80];
+    opstr op[5];
     BYTE type;
 
 } function;
@@ -1038,7 +1038,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
 
             printf("0x%"PRIx64":\t%s\t%s\n", insn[i].address, insn[i].mnemonic, insn[i].op_str, insn[i].bytes);
 
-            if (count < 79) {   // 80 is max opstr size for saving, I dont want 500mb files lol this keeps it around 30 - 100 mb
+            if (i < 5) {   // 80 is max opstr size for saving, I dont want 500mb files lol this keeps it around 30 - 100 mb
             functions[funcNum].op[i].size = mystrlen(insn[i].op_str);
             strcpy(functions[funcNum].op[i].asm, insn[i].op_str);
             strcpy(functions[funcNum].op[i].mnum, insn[i].mnemonic);
@@ -1530,7 +1530,6 @@ for (int i=0; i < exportcount; i++) {
 
     DWORD rva;
     if (!ReadProcessMemory(hProcess, &AddressOfFunctions[currentOrdinal], &rva, sizeof(DWORD), NULL)) {
-        printf("rva error %lu\n", GetLastError());
         break;
     }
     
@@ -4086,13 +4085,14 @@ typedef struct {
 redirection* direction;
 
 int addrTracker = 0; // tracking number of redirection structs for main loop also
+int tracker = 0;
+
 int findJmp(void* hProcess, unsigned char* codeStart, int Size) {
 
     unsigned char* buff = malloc(Size);
     void* sizeToRead = Size;
     ReadProcessMemory(hProcess, codeStart, buff, Size, 0);
 
-    int tracker = 0;
     for (int i=0; i < Size; i++) {
         if (buff[i] != 0xE8) continue;
         if (buff[i+6] == 0x48 || buff[i+5] == 0x48) {
@@ -4139,6 +4139,7 @@ int findJmp(void* hProcess, unsigned char* codeStart, int Size) {
         //}
 
         addrTracker++;
+
         if (addrTracker == tracker) break;
 
     }
@@ -4286,7 +4287,7 @@ typedef struct {
     char help[128];
 } CommandName;
 
-static const CommandName COMMANDS[] = {{"reg", "[!] List startup registers"}, {"getreg", "[!] Get current register values"}, {"bp", "[!] Set a breakpoint"}, {"write", "[!] Write to an address"}, {"threads", "[!] List threads"}, {"swap", "[!] Swap thread (Run !threads to get #)"}, {"dump", "[!] Dump an address"}, {"disasm", NULL}, {"rebuild", NULL}, {"sub", NULL}, {"func", NULL}, {"jmp", NULL}, {"sw", NULL}, {"pointers", NULL}, {"hot", NULL}, {"mbi", NULL}, {"bit", NULL}, {"var", NULL}, {"veh", NULL}, {"imports", NULL}, {"entry", NULL}, {"dllcheck", NULL}, {"dllexp", NULL}, {"wor", NULL}, {"hooked", NULL}, {"heap", NULL}, {"static", NULL}, {"rsrc", NULL}, {"net", NULL}, {"mz", NULL}, {"rx", NULL}, {"stubs", NULL}, {"proc", NULL}, {"cpu", NULL}, {"attr", NULL}, {"peb", NULL}, {"params", NULL}, {"gsi", NULL}, {"cfg", NULL}, {"sig", NULL}, {"pwr", NULL}, {"handles", NULL}, {"handlesEx", NULL}, {"vendor", NULL}, {"dll", NULL}, {"tcp", NULL}, {"clear", NULL}, {"exit", NULL}, {"kill", NULL}, {"help", NULL}, {"ext", NULL}, {"wsl", NULL}, {"cmd", NULL}, {"edit", NULL}, {"docs", NULL}, {"save", NULL}, {"packs", NULL}, {"unload", NULL}, {"start", NULL}, {"pebPatch"}};
+static const CommandName COMMANDS[] = {{"reg", "[!] List startup registers"}, {"getreg", "[!] Get current register values"}, {"bp", "[!] Set a breakpoint"}, {"write", "[!] Write to an address"}, {"threads", "[!] List threads"}, {"swap", "[!] Swap thread (Run !threads to get #)"}, {"dump", "[!] Dump an address"}, {"disasm", "dissassemble functions"}, {"rebuild", "build a PE from memory"}, {"sub", "Dump before an address"}, {"func", "get function count and exception info"}, {"jmp", NULL}, {"sw", NULL}, {"pointers", NULL}, {"hot", NULL}, {"mbi", NULL}, {"bit", NULL}, {"var", NULL}, {"veh", NULL}, {"imports", NULL}, {"entry", NULL}, {"dllcheck", NULL}, {"dllexp", NULL}, {"wor", NULL}, {"hooked", NULL}, {"heap", NULL}, {"static", NULL}, {"rsrc", NULL}, {"net", NULL}, {"mz", NULL}, {"rx", NULL}, {"stubs", NULL}, {"proc", NULL}, {"cpu", NULL}, {"attr", NULL}, {"peb", NULL}, {"params", NULL}, {"gsi", NULL}, {"cfg", NULL}, {"sig", NULL}, {"pwr", NULL}, {"handles", NULL}, {"handlesEx", NULL}, {"vendor", NULL}, {"dll", NULL}, {"tcp", NULL}, {"clear", NULL}, {"exit", NULL}, {"kill", NULL}, {"help", NULL}, {"ext", NULL}, {"wsl", NULL}, {"cmd", NULL}, {"edit", NULL}, {"docs", NULL}, {"save", NULL}, {"packs", NULL}, {"unload", NULL}, {"start", NULL}, {"pebPatch"}};
 
 int getHelp(char* buff) {
     for (int i=0; i < 60; i++) {
@@ -4303,6 +4304,8 @@ int getHelp(char* buff) {
 
 int checkMatch(char* buff) {
     int len = mystrlen(buff);
+    int listed = 0;
+
     for (int j=0; j < 60; j++) {
         
         int score = 0;
@@ -4316,8 +4319,10 @@ int checkMatch(char* buff) {
             score++;
             
             if (score >= 3) {
+                listed++;
                 printf("Did you mean?:\n[!]!%s\n", COMMANDS[j].name);
                 getHelp(buff);
+                if (listed > 3) return 1;
             }
 
         }
@@ -4377,7 +4382,7 @@ int slpWalk(char* filePath) {
 
         printf("%lu Begin: %p\t End: %p\tType: %02X\n", s, functions[funcTracker].begin, functions[funcTracker].end, functions[funcTracker].type);
         
-        for (int i=0; i < 80; i++) {
+        for (int i=0; i < 5; i++) {
         if (!func->op[i].address) break;
         if (strcmp(func->op[i].asm, functions[funcTracker].op[i].asm) == 0) continue;
         printf("Diff found:\n%s [0x%p]\n", functions[funcTracker].op[i].asm, functions[funcTracker].op[i].address);
@@ -4760,6 +4765,84 @@ int cmdCheckForImportString(void* hProcess, char* buff, HASHMAP* map) {
     return 0;
 }
 
+int scanForPebRead(void* hProcess, void* start, int size) {
+    
+    unsigned char* checkIt = malloc(size);
+    unsigned long* res = 0;
+    if (!ReadProcessMemory(hProcess, (void*)start, checkIt, size, &res)) {
+        printf("error\n");
+        return 1;
+    }
+
+    printf("Walking 0x%p [%lu]\n", start, res);
+
+    for (int i=0; i < res; i+=2) {
+        if (*(unsigned short*)((unsigned char*)checkIt + i) != 0x4865) continue;
+        if (*(unsigned short*)((unsigned char*)checkIt + i + 2) != 0x0C8B) continue;
+        if (*(unsigned short*)((unsigned char*)checkIt + i + 4) != 0x6025) continue;
+        printf("peb resolved at 0x%p\n", (unsigned char*)start + i);
+    }
+
+    printf("clean\n");
+    return 0;
+}
+
+int checkForRva(char* buff) {
+    if (buff[0] == 0) return 1;
+    for (int i=0; i < mystrlen(buff); i++) {
+        if (buff[i] != 'd' && buff[i] != 'D') continue;
+        if (buff[i+1] != 'l' && buff[i+1] != 'L') continue;
+        if (buff[i+2] != 'l' && buff[i+2] != 'L') continue;
+        if (buff[i+3] != '+') continue;
+        if (buff[i+4] == 00) {
+            printf("send RVA in 0x?? form");
+            return 1;
+        }
+
+        char string[128];
+        int j;
+        for (j=0; j < i + 3; j++) {
+            string[j] = buff[j];
+        }
+
+        string[j] = 00;
+
+        ENTRY* out = read(dllMap, string);
+        if (out == 0) return 1;
+        printf("Dumping rva from %s\n", out->key);
+
+        unsigned int bytes = 0;
+        for (int p=0; p < 64; p+=2) {
+            if (buff[i+6+p] == 00 || buff[i+6+p+1] == 00) break;
+
+            unsigned char high = 00;
+            if (buff[i+6+p] >= 'A') {
+            high = ((buff[i+6+p] - 'A' + 10));
+            } else {
+            high = ((buff[i+6+p] - '0'));
+            }
+
+            unsigned char low = 00;
+            if (buff[i+6+p+1] >= 'A') {
+            low = ((buff[i+6+p+1] - 'A' + 10));
+            } else {
+            low = ((buff[i+6+p+1] - '0'));
+            }
+
+            unsigned char pair = (high << 4) | low;
+
+            bytes = (bytes << 8) | pair;
+        }
+
+        readRawAddr(hProcess, out->address + (bytes) + 0x1000, 128, 0, 0);
+
+        return 0;
+
+    }
+
+    return 1;
+}
+
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -4826,7 +4909,7 @@ BOOL WINAPI debug(LPCVOID param) {
             // Getting PEB / Startup info
             // Loading the Import struct
             // I needed this to gracefully exit on bad reads
-            if (GetPEBFromAnotherProcess(hProcess, pi.dwThreadId, pi.dwProcessId) == 1 && getRemoteImports(hProcess, NULL, 0, 0) == 0) {
+            if (GetPEBFromAnotherProcess(hProcess, pi.dwThreadId, pi.dwProcessId) == 1 && getRemoteImports(hProcess, NULL, 0, 0) != 1) {
 
             // Getting function boundaries
             getExceptionDir(hProcess, 0);
@@ -5886,9 +5969,14 @@ BOOL WINAPI debug(LPCVOID param) {
                                             }
 
                                             for (int i=0; i < addrTracker; i++) {
+ 
+                                                if (i > 100000) break;  // need to speed it up
 
                                                 int numOfTimesCalled = 0;
                                                 for (int s=0; s < addrTracker; s++) {
+
+                                                    if (direction[i].resolved == 0) break;
+
                                                     if (Times[s].address == direction[i].resolved) {
                                                         //printf("0x%p Tracker: %lu of %lu\n", Times[s].address, s, addrTracker);
                                                         Times[s].numOfTimesCalled++;
@@ -5901,6 +5989,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 }
                                                 
                                                 if (getHotzones == 0) {
+                                                printf("doing\n");
                                                 if (direction[i].type == 1) {
                                                 printf("[%lu] CALL 0x%p\tRVA: %lu\tTYPE: %lu\n", i, direction[i].addr, direction[i].rva, direction[i].type);
                                                 readRawAddr(hProcess, direction[i].addr, 5, 0, 0);
@@ -5924,7 +6013,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             }
 
                                                 for (int s=0; s < addrTracker; s++) {
-                                                if (Times[s].numOfTimesCalled != 0) {
+                                                if (Times[s].numOfTimesCalled >= 5) {
                                                     printf("0x%p called %lu times\n", Times[s].address, Times[s].numOfTimesCalled);
 
                                                 }
@@ -6187,7 +6276,15 @@ BOOL WINAPI debug(LPCVOID param) {
                                             continue;
                                         }
 
+                                        else if (mystrcmp(buff, "!pebscan") == 0) {
+                                            int size = (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start;
+                                            scanForPebRead(hProcess, codeRegions->codeBounds[0].start, size);
+                                            continue;
+                                        }
+
                                         else {
+
+                                            if (checkForRva(buff) == 0) continue;
 
                                             ENTRY* res = read(dllMap, buff);    // Check for dll string
                                             if (res != 0) {
