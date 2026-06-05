@@ -4843,6 +4843,47 @@ int checkForRva(char* buff) {
     return 1;
 }
 
+int findLoadersGuts(void* hProcess, void* ntbase, int size) {
+
+    unsigned char* ntbuff = malloc(size);
+    ReadProcessMemory(hProcess, ntbase, ntbuff, size, 0);
+
+    for (int i=0; i < size; i++) {
+        if (((unsigned char*)ntbuff)[i] == 'M' && (((unsigned char*)ntbuff)[i+1] == 'Z')) {
+            printf("found loader code at 0x%p\n", (unsigned char*)ntbase + i - 1);
+        }
+
+        if (((unsigned char*)ntbuff)[i] != 0x77) continue;
+        if (((unsigned char*)ntbuff)[i+8] != 0x77) continue;
+        if (((unsigned char*)ntbuff)[i+16] != 0x77) continue;
+
+        unsigned char check = 0;
+        check = (*(unsigned long long*)((unsigned char*)ntbuff + i - 11) >> 40);
+        if (check != 0x7F) continue;
+
+        void* newAddress = *(unsigned long long*)((unsigned char*)ntbuff + i - 11) + 0x0000000180000000;
+
+        printf("ntdll base: 0x%p\n", newAddress);
+
+        void* block = ((unsigned char*)ntbuff + i - 11 - 16);
+        printf("size: %lu\n", *(unsigned long*)block);
+        
+        uint64_t* rng = (unsigned long long*)((unsigned char*)block + 0x98);
+
+        printf("rng: %p\n", *rng);
+
+        for (int z=0; z < 32; z+=8) {
+        uint64_t* ad = (unsigned long long*)((unsigned char*)block+0x98+0x58+z);
+        printf("cfg function: 0x%p\n", *ad);
+        }
+        break;
+
+    }
+
+    free(ntbuff);
+    return 0;
+}
+
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -6280,6 +6321,20 @@ BOOL WINAPI debug(LPCVOID param) {
                                             int size = (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start;
                                             scanForPebRead(hProcess, codeRegions->codeBounds[0].start, size);
                                             continue;
+                                        }
+
+                                        else if (mystrcmp(buff, "!guts") == 0) {
+
+                                            uint64_t addr = 0;
+                                            for (int i=0; i < countModules; i++) {
+                                                for (int j=0; j < modules[i].exportCount; j++) {
+                                                    if (wcscmp(modules[i].export[j].name, "LdrSystemDllInitBlock") == 0) {
+                                                        addr = modules[i].export[j].address;
+                                                    }
+                                                }
+                                            }
+
+                                            findLoadersGuts(hProcess, remoteDLLInfo[1].address, 2522104);
                                         }
 
                                         else {
