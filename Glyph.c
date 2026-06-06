@@ -1205,6 +1205,7 @@ int currentDllExportDump = 0;
 typedef struct {
     char name[100];
     void* address;
+    int timesCalled;
 } exports;
 
 typedef struct {
@@ -4402,7 +4403,6 @@ wchar_t* secondParam = NULL; // argv[2]
 wchar_t* dllChoice; // Only for DLLs
 
 int dumped = 0;
-
 int DumpReg(char* name, int isIn) {
     HKEY out;
     long res = RegOpenKeyExA(HKEY_LOCAL_MACHINE, name, 0, KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | KEY_READ, &out);
@@ -4743,6 +4743,19 @@ int diffDiskNtdll(void* hProcess, void* ntdllBase) {
     return 0;
 }
 
+typedef struct {
+    void* address;
+} sexportAddr;
+
+typedef struct {
+    char name[128];
+    int timesCalled;
+    int currentAddressCount;
+    sexportAddr addr[300];
+} sexportData;
+
+sexportData exportData[300];
+
 int cmdCheckForImportString(void* hProcess, char* buff, HASHMAP* map) {
 
     ENTRY* res = read(map, buff);
@@ -4756,6 +4769,33 @@ int cmdCheckForImportString(void* hProcess, char* buff, HASHMAP* map) {
             printf("\nIMPORT: %s\t0x%p\n", res->key, res->address);
             printf("[!] RVA: %p\t", (unsigned long)((unsigned char*)res->address - remoteDLLInfo[j].textStart));
             wprintf(L"[%ws]\n", remoteDLLInfo[j].dllName);
+
+            // int isgood = 0;
+            // for (int d=0; d < countModules; d++) {
+            // for (int p=0; p < modules[d].exportCount; p++) {
+            // if (mystrcmp(modules[d].export[p].name, buff) == 0) {
+            //     if (modules[d].export[p].timesCalled != 0) {
+            //     printf("Times called: %lu\n", modules[d].export[p].timesCalled);
+            //     }
+            // }
+            // }
+            // }
+
+            for (int d=0; ; d++) {
+                if (exportData[d].timesCalled == 0 || d >= 300) break;
+                if (mystrcmp(exportData[d].name, buff) == 0) {
+                printf("Times called: %lu\n", exportData[d].timesCalled);
+
+                for (int a=0; ;a++) {
+                    if (exportData[d].addr[a].address == 00) break;
+                    printf("0x%p\n", exportData[d].addr[a].address);
+                }
+                
+                break;
+                }
+            }
+
+            
             return 1;
         }
     }
@@ -4884,6 +4924,71 @@ int findLoadersGuts(void* hProcess, void* ntbase, int size) {
     return 0;
 }
 
+int riprelcalls(void* hProcess, void* base, int size, int show) {
+
+    unsigned char* relBuff = malloc(size);
+    ReadProcessMemory(hProcess, base, relBuff, size, 0);
+
+    int last = 0;
+    for (int i=0; i < size; i++) {
+
+        __m512i zmm = _mm512_load_si512(relBuff+i);
+        __m512i zmm2 = _mm512_load_si512(relBuff+i+64);
+        __m512i bytecmp = _mm512_set1_epi8(0xFF);
+        __mmask64  res = _mm512_cmpeq_epi8_mask(zmm, bytecmp);
+        __mmask64  res2 = _mm512_cmpeq_epi8_mask(zmm2, bytecmp);
+        if (!res2 && !res) {
+            i+=128;
+            continue;
+        }
+
+        if (relBuff[i] != 0xFF) continue;
+        if (relBuff[i+1] != 0x15) continue;
+
+        DWORD rel = 0;
+        uint64_t nextRip = (uint64_t)((unsigned char*)base + i) + 6;
+
+        //printf("base: 0x%p\tnext rip: 0x%p\trip: %p\t%02X %02X %02X %02X\n", base, nextRip, i, relBuff[i+2], relBuff[i+3], relBuff[i+4], relBuff[i+5]);
+        rel = (relBuff[i+5] << 24) | (relBuff[i+4] << 16) | (relBuff[i+3] << 8) | (relBuff[i+2]);
+        
+        unsigned long long exportAddr = 0;
+        if (!ReadProcessMemory(hProcess, (unsigned char*)base + rel + i + 6, &exportAddr, 8, 0)) {
+            continue;
+        }
+
+        for (int d=0; d < countModules; d++) {
+            for (int z=0; z < modules[d].exportCount; z++) {
+                if (exportAddr == modules[d].export[z].address) {
+                    if (show) {
+                    printf("%s - %lu - 0x%p [%p]\n", modules[d].export[z].name, modules[d].export[z].timesCalled, (unsigned char*)base+i, i);
+                    break;
+                    }
+
+                    for (int s=0; s < 300; s++) {
+                        if (exportData[s].timesCalled == 00) {
+                            exportData[s].addr[exportData[s].timesCalled].address = (unsigned char*)base+i;
+                            exportData[s].timesCalled++;
+                            strcpy(exportData[s].name, modules[d].export[z].name);
+                            break;
+                        } else if (mystrcmp(exportData[s].name, modules[d].export[z].name) == 0) {
+                            if (exportData[s].timesCalled <= 300) {
+                            exportData[s].addr[exportData[s].timesCalled].address = (unsigned char*)base+i;
+                            exportData[s].timesCalled++;
+                            }
+                            break;
+                        }
+                    }
+
+                    modules[d].export[z].timesCalled++;
+                }
+            }
+        }
+
+    }
+
+    free(relBuff);
+    return 0;
+}
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -4961,6 +5066,8 @@ BOOL WINAPI debug(LPCVOID param) {
             // finding all calls/jmps
             int Size = (unsigned char*)codeRegions->codeBounds[0].end - (unsigned char*)codeRegions->codeBounds[0].start;
             findJmp(hProcess, codeRegions->codeBounds[0].start, Size);
+
+            //riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
 
             // Getting pointers from .data
             for (int i=0; i < 10; i++) {
@@ -6337,6 +6444,11 @@ BOOL WINAPI debug(LPCVOID param) {
                                             findLoadersGuts(hProcess, remoteDLLInfo[1].address, 2522104);
                                         }
 
+                                        else if (mystrcmp(buff, "!rel") == 0) {
+                                            printf("Scanning... Will take time\n");
+                                            riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
+                                        }
+
                                         else {
 
                                             if (checkForRva(buff) == 0) continue;
@@ -6355,6 +6467,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 if (mystrcmp(buff, modules[i].export[j].name) == 0) {
                                                     readRawAddr(hProcess, modules[i].export[j].address, 999, 0, 0);
                                                     foundExp = 1;
+                                                    break;
                                                 }
                                                 }
                                             }
