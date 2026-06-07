@@ -602,6 +602,29 @@ int getCPUVendor() {
     vendor[12] = '\0';
 
     printf("CPU: %s\n", vendor);
+
+    if (mystrcmp(vendor, "AuthenticAMD") == 0) {
+    int amdinfo[4];
+    __cpuidex(&amdinfo, 0x80000001, 0);
+    printf("Advanced Bit Manipulation: %02X\n", ((amdinfo[2] >> 5)) & 1);
+    printf("Extended Processor Signature: %p\n", amdinfo[2]);
+
+    int amd[4];
+    __cpuidex(&amd, 0x80000002, 0);
+    printf("%c", amd[0]);
+    printf("%c", amd[0] >> 8);
+    printf("%c", amd[0] >> 16);
+    printf("%c", amd[0] >> 24);
+    printf("%c", amd[1]);
+    printf("%c", amd[1] >> 8);
+    printf("%c", amd[1] >> 16);
+    printf("%c", amd[1] >> 24);
+    printf("%c", amd[2]);
+    printf("%c", amd[2] >> 8);
+    printf("%c", amd[2] >> 16);
+    printf("%c\n", amd[2] >> 24);
+    }
+
 } 
 // Helpers
 int mystrcmp(char* one, char* two) {
@@ -4805,6 +4828,7 @@ int cmdCheckForImportString(void* hProcess, char* buff, HASHMAP* map) {
     return 0;
 }
 
+// scan for peb references in .text
 int scanForPebRead(void* hProcess, void* start, int size) {
     
     unsigned char* checkIt = malloc(size);
@@ -4827,6 +4851,7 @@ int scanForPebRead(void* hProcess, void* start, int size) {
     return 0;
 }
 
+// dll math
 int checkForRva(char* buff) {
     if (buff[0] == 0) return 1;
     for (int i=0; i < mystrlen(buff); i++) {
@@ -4883,6 +4908,7 @@ int checkForRva(char* buff) {
     return 1;
 }
 
+// find loader internal functions
 int findLoadersGuts(void* hProcess, void* ntbase, int size) {
 
     unsigned char* ntbuff = malloc(size);
@@ -4924,14 +4950,20 @@ int findLoadersGuts(void* hProcess, void* ntbase, int size) {
     return 0;
 }
 
+// find and compute rip relative calls
 int riprelcalls(void* hProcess, void* base, int size, int show) {
 
     unsigned char* relBuff = malloc(size);
     ReadProcessMemory(hProcess, base, relBuff, size, 0);
 
+    int info[4];
+    __cpuidex(&info, 7, 0);
+    //printf("%02X", ((info[1] >> 16) & 1));
+
     int last = 0;
     for (int i=0; i < size; i++) {
 
+        if (((info[1] >> 16) & 1) == 1) {
         __m512i zmm = _mm512_load_si512(relBuff+i);
         __m512i zmm2 = _mm512_load_si512(relBuff+i+64);
         __m512i bytecmp = _mm512_set1_epi8(0xFF);
@@ -4940,6 +4972,7 @@ int riprelcalls(void* hProcess, void* base, int size, int show) {
         if (!res2 && !res) {
             i+=128;
             continue;
+        }
         }
 
         if (relBuff[i] != 0xFF) continue;
@@ -4989,6 +5022,7 @@ int riprelcalls(void* hProcess, void* base, int size, int show) {
     free(relBuff);
     return 0;
 }
+
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -5067,7 +5101,7 @@ BOOL WINAPI debug(LPCVOID param) {
             int Size = (unsigned char*)codeRegions->codeBounds[0].end - (unsigned char*)codeRegions->codeBounds[0].start;
             findJmp(hProcess, codeRegions->codeBounds[0].start, Size);
 
-            //riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
+            riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
 
             // Getting pointers from .data
             for (int i=0; i < 10; i++) {
@@ -6446,7 +6480,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                         else if (mystrcmp(buff, "!rel") == 0) {
                                             printf("Scanning... Will take time\n");
-                                            riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
+                                            riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 1);
                                         }
 
                                         else {
