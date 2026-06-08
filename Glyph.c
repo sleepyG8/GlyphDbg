@@ -4806,7 +4806,7 @@ int cmdCheckForImportString(void* hProcess, char* buff, HASHMAP* map) {
 
             for (int d=0; ; d++) {
                 if (exportData[d].timesCalled == 0 || d >= 300) break;
-                if (mystrcmp(exportData[d].name, buff) == 0) {
+                if (strstr(exportData[d].name, buff) == 0) {
                 printf("Times called: %lu\n", exportData[d].timesCalled);
 
                 for (int a=0; ;a++) {
@@ -4953,6 +4953,11 @@ int findLoadersGuts(void* hProcess, void* ntbase, int size) {
 // find and compute rip relative calls
 int riprelcalls(void* hProcess, void* base, int size, int show) {
 
+    int q;
+    for (q=0; ; q++) {
+        if (mystrcmp(codeRegions->codeBounds[q].name, ".rdata") == 0) break;
+    }
+
     unsigned char* relBuff = malloc(size);
     ReadProcessMemory(hProcess, base, relBuff, size, 0);
 
@@ -4985,9 +4990,11 @@ int riprelcalls(void* hProcess, void* base, int size, int show) {
         rel = (relBuff[i+5] << 24) | (relBuff[i+4] << 16) | (relBuff[i+3] << 8) | (relBuff[i+2]);
         
         unsigned long long exportAddr = 0;
+        if (codeRegions->codeBounds[q].end >= (unsigned char*)base + rel + i + 6 && (unsigned char*)base + rel + i + 6 >= codeRegions->codeBounds[q].start) {
         if (!ReadProcessMemory(hProcess, (unsigned char*)base + rel + i + 6, &exportAddr, 8, 0)) {
             continue;
         }
+        } else continue;
 
         for (int d=0; d < countModules; d++) {
             for (int z=0; z < modules[d].exportCount; z++) {
