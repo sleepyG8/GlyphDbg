@@ -4806,7 +4806,7 @@ int cmdCheckForImportString(void* hProcess, char* buff, HASHMAP* map) {
 
             for (int d=0; ; d++) {
                 if (exportData[d].timesCalled == 0 || d >= 300) break;
-                if (strstr(exportData[d].name, buff) == 0) {
+                if (strstr(exportData[d].name, buff) != 0) {
                 printf("Times called: %lu\n", exportData[d].timesCalled);
 
                 for (int a=0; ;a++) {
