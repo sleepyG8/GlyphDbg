@@ -8,6 +8,7 @@
 #include "capstone/capstone.h"
 #include "intrin.h"
 #include <immintrin.h>
+#include <IPTypes.h>
 //#include "starmusic.h"
 
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
@@ -1772,6 +1773,7 @@ int findRX(HANDLE hProcess, unsigned char* base) {
 
 int BreakPoint(void* hProcess, void* address) {
     DWORD old = 0;
+    int (*pVirtualProtectEx)() = GetProcAddress(GetModuleHandle("KERNELBASE.dll"), "VirtualProtect");
     if (!VirtualProtectEx(hProcess, address, 16, PAGE_EXECUTE_READWRITE | PAGE_GUARD, &old)) {
         printf("Failed to change protections %lu\n", GetLastError());
         return 0;
@@ -2220,88 +2222,43 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
 BOOL GetSecurityDescriptor(HANDLE hObject) {
 
 HMODULE hAdvapi32 = LoadLibrary("Advapi32.dll");
+HMODULE hNtDll = GetModuleHandle("ntdll.dll");
 
-typedef BOOL (WINAPI *pIsValidSecurityDescriptor)(PSECURITY_DESCRIPTOR);
-pIsValidSecurityDescriptor IsValidSD = (pIsValidSecurityDescriptor)GetProcAddress(hAdvapi32, "IsValidSecurityDescriptor");
-
-if (!IsValidSD) {
-    printf("Failed to retrieve IsValidSecurityDescriptor function!\n");
-    FreeLibrary(hAdvapi32);
-    return FALSE;
-}
-
-typedef NTSTATUS (NTAPI *pZwQuerySecurityObject)(
-    HANDLE, OBJECT_INFORMATION_CLASS, PVOID, ULONG, PULONG
-);
-//setting dll manually
-HMODULE hNtDll = LoadLibrary("ntdll.dll");
-pZwQuerySecurityObject ZwQuerySecurityObject = (pZwQuerySecurityObject)GetProcAddress(hNtDll, "ZwQuerySecurityObject");
+int (*ZwQuerySecurityObject)() = GetProcAddress(hNtDll, "ZwQuerySecurityObject");
 
 ULONG sdSize = 0;
-//this also sets the size for the psd alloc
 NTSTATUS status = ZwQuerySecurityObject(hObject, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, NULL, sdSize, &sdSize);
 
 PSECURITY_DESCRIPTOR pSD = (PSECURITY_DESCRIPTOR)malloc(sdSize);
 
 status = ZwQuerySecurityObject(hObject, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, pSD, sdSize, &sdSize);
 
-if (!IsValidSD(pSD)) {
-    printf("Invalid security descriptor!\n");
-    return FALSE;
-}
+if (!NT_SUCCESS(status)) return 0;
 
-if (status == STATUS_SUCCESS) {
-    printf("\x1b[92m[!]\x1b[0m retrieved the security descriptor!\n");
-} else {
-    printf("error\n");
-    return FALSE;
-}
+printf("\x1b[92m[!]\x1b[0m retrieved the security descriptor!\n");
 
 PSID ownerSID = NULL;
-PSID oGroup;
 PACL dasl;
 BOOL ownerDefaulted;
-BOOL ownerDefaultedGroup;
 BOOL ownerDefaultedDasl;
 BOOL daslPresent;
+
 //getting owner
-if (!GetSecurityDescriptorOwner(pSD, &ownerSID, &ownerDefaulted)) {
-    printf("error getting owner SID\n");
-    return FALSE;
-}
-// getting group
-if (!GetSecurityDescriptorGroup(pSD, &oGroup, &ownerDefaultedGroup)){
-    printf("error getting Object group\n");
-    return FALSE;
-}
+if (!GetSecurityDescriptorOwner(pSD, &ownerSID, &ownerDefaulted)) return FALSE;
+
 //getting dacl
-if (!GetSecurityDescriptorDacl(pSD, &daslPresent, &dasl, &ownerDefaultedDasl)) {
-    printf("error getting DACL\n");
-    return FALSE;
-} else {
-    if (daslPresent == FALSE) {
-        printf("No group permissions set\n");
-    }
+GetSecurityDescriptorDacl(pSD, &daslPresent, &dasl, &ownerDefaultedDasl);
+if (daslPresent == FALSE) {
+    printf("No group permissions set\n");
 }
 
 LPSTR daclOut;
-if (ConvertSecurityDescriptorToStringSecurityDescriptor(pSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &daclOut, NULL)) {
-    printf("\x1b[92m[+]\x1b[0m DACL: %s\n", daclOut);
-}
-
-//ConvertStringSecurityDescriptorToSecurityDescriptor found this use later to set a descriptor?
+ConvertSecurityDescriptorToStringSecurityDescriptor(pSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &daclOut, NULL);
+printf("\x1b[92m[+]\x1b[0m DACL: %s\n", daclOut);
 
 LPSTR sidstring;
-if (ConvertSidToStringSid(ownerSID, &sidstring)) {
-    printf("\x1b[92m[+]\x1b[0m SID: %s\n", sidstring);
-} else {
-    printf("error geeting SID\n");
-    return FALSE;
-}
-//SE_OBJECT_TYPE sObj;
-//SECURITY_INFORMATION sInfo;
-//if (GetSecurityInfo(hObject, sObj, sInfo, &ownerSID, &oGroup,  ))
-
+if (!ConvertSidToStringSid(ownerSID, &sidstring)) return FALSE; 
+printf("\x1b[92m[+]\x1b[0m SID: %s\n", sidstring);
 
 char name[256];
 char domain[256];
@@ -2321,9 +2278,9 @@ if (mystrcmp(name, "SYSTEM") == 0) {
     return 2;
 }
 
-return TRUE;
+free(pSD);
 FreeLibrary(hAdvapi32);
-FreeLibrary(hNtDll);
+return TRUE;
 }
 
 // Listing all processes
@@ -3196,19 +3153,47 @@ char* ip_to_string(DWORD addr, char* ip) {
     return 0;
 }
 
+// IP_ADAPTER_ADDRESSES_LH
+int getadapterInfo(void* hMod, unsigned long index) {
+
+    int (*getperadapterinfo)() = GetProcAddress(hMod, "GetPerAdapterInfo");
+    int sizea = 0;
+    getperadapterinfo(index, 0, &sizea);
+
+    unsigned char* buff = malloc(sizea);
+
+    getperadapterinfo(index, buff, &sizea);
+
+    if (((unsigned char*)buff)[24] == 00) return 0;
+
+    for (int i=0; i < sizea; i++) {
+        printf("%02X ", ((unsigned char*)buff)[i]);
+    }
+    printf("\n");
+
+    printf("%s\n", &((unsigned char*)buff)[24]);
+    printf("%s\n", &((unsigned char*)buff)[40]);
+
+    free(buff);
+    return 0;
+}
+
 int checkTcp(long pid) {
     
     writeCon("Getting Tcp data...\n");
+
+    void* hMod = LoadLibrary("IPHLPAPI.DLL");
+    int (*gettcptable)() = GetProcAddress(hMod, "GetExtendedTcpTable");
+
     MIB_TCPTABLE_OWNER_PID* table;
     DWORD size = 0;
-    GetExtendedTcpTable(NULL, &size, 0, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+    gettcptable(NULL, &size, 0, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
 
     table = (MIB_TCPTABLE_OWNER_PID*)malloc(size);
 
-    printf("%lu\n", size);
-
-    if (GetExtendedTcpTable(table, &size, 0, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) == NO_ERROR) {
+    if (gettcptable(table, &size, 0, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) == NO_ERROR) {
         for (int i=0; i < table->dwNumEntries; i++) {
+            
             MIB_TCPROW_OWNER_PID data = table->table[i];
 
             char ip[16];
@@ -3219,9 +3204,29 @@ int checkTcp(long pid) {
 
             printf("%s[%lu] -> %s[%lu]\tState <%lu>\t ", ip, data.dwLocalPort, ipRemote, data.dwRemotePort, data.dwState);
             printf("%lu\n", data.dwOwningPid);
+
         }
     }
 
+    int (*GetAdaptersAddresses)() = GetProcAddress(hMod, "GetAdaptersAddresses");
+
+    int adaptSize = 0;
+    GetAdaptersAddresses(0, 0, 0, 0, &adaptSize);
+    
+    unsigned char* adaptbuff = malloc(adaptSize);
+    GetAdaptersAddresses(0, 0, 0, adaptbuff, &adaptSize);
+
+    for (int i=0; ; i++) {
+    printf("ADAPTER #%lu\n", i);
+    printf("%s\n", *(unsigned long long**)&(((unsigned char*)adaptbuff)[16])); //name
+    getadapterInfo(hMod, *(DWORD*)&((unsigned char*)adaptbuff)[4]);                  //index
+
+    if (*(unsigned long long**)&(((unsigned char*)adaptbuff)[8]) == 00) break; //next
+    adaptbuff = *(unsigned long long**)&(((unsigned char*)adaptbuff)[8]);
+    }
+
+    free(table);
+    FreeLibrary(hMod);
     return 0;
 }
 
@@ -4595,14 +4600,20 @@ int checkLnk(wchar_t* path) {
 }
 
 void* getModuleFunctionBoundaries(void* hProcess, int getBound, uint64_t* funAddress) {
-
+                                               
+    void* ki = 0;
     for (int i=0; i < countModules; i++) {
-        if (wcscmp(modules[i].modName, L"C:\\Windows\\SYSTEM32\\ntdll.dll") == 0) {
-            ntdllBase = modules[i].modAddress;
+        for (int j=0; j < modules[i].exportCount; j++) {     
+            if (mystrcmp("KiUserInvertedFunctionTable", modules[i].export[j].name) == 0) {
+                ki = modules[i].export[j].address;
+                break;
+            }
         }
+        if (ki != 0) break;
     }
 
-    void* ki = getRemoteExports(hProcess, ntdllBase, "KiUserInvertedFunctionTable", 0);
+    if (ki == 00) return 0;
+
 
     unsigned char tableBuff[1028];
     if (!ReadProcessMemory(hProcess, ki, &tableBuff, sizeof(tableBuff), 0)) {
