@@ -3516,7 +3516,11 @@ BOOL printHelp() {
     
     writeCon("!dump     - Dump a raw address (retry if ERROR_ACCESS_DENIED)\n");
 
+    writeCon("!lastdump - Get dump history\n");
+
     writeCon("!disasm   - Disassemble the function boundaries\n");
+
+    writeCon("!rel      - Resolve rip relative calls\n");
 
     writeCon("!rebuild  - Rebuild memory of an address into a PE (extracting code)\n");
 
@@ -3527,6 +3531,8 @@ BOOL printHelp() {
     writeCon("!jmp      - Get all calls and jumps\n");
 
     writeCon("!sw       - Walk the current threads stack\n");
+
+    writeCon("!pebscan  - Scan for peb access\n");
 
     writeCon("!pointers - Dump all pointers from .data\n");
 
@@ -3567,6 +3573,8 @@ BOOL printHelp() {
     writeCon("!rift     - Diff snapshots (Provide a .slp file using !save)\n");
 
     writeCon("!stubs    - Dump syscall stubs\n");
+
+    writeCon("!diffDisk - Diff ntdll in mem with disk\n");
     
     writeCon("\n-- Process & System Info --\n");
     
@@ -3583,6 +3591,8 @@ BOOL printHelp() {
     writeCon("!gsi      - Get System Info\n");
     
     writeCon("!cfg      - Check for CFG\n");
+
+    writeCon("!guts     - Get Loader Internals\n");
     
     writeCon("!sig      - Get signature\n");
     
@@ -5041,6 +5051,72 @@ int riprelcalls(void* hProcess, void* base, int size, int show) {
     return 0;
 }
 
+// int remote() {
+//     void* (*commander)() = GetProcAddress(LoadLibrary("TalkToServerDebugger.dll"), "commander");
+//     if (!commander) return 1;
+//     void* out = commander();
+//     printf("%s\n", out);
+//     return 0;
+// }
+
+// Experiemental
+int hookApi(void* hProcess, char* name) {
+
+    return 0;
+}
+
+typedef struct {
+    void* address;
+    WORD hour;
+    WORD minute;
+    struct LASTADDRESSDUMP* last;
+} LASTADDRESSDUMP;
+
+LASTADDRESSDUMP lastAddress[130];
+int init = 0;
+
+int storeLastDump(void* hProcess, void* address, int init, int list) {
+
+    if (init == 0) {
+        for (int i=0; i < 129; i++) {
+            lastAddress[i].address = 00;
+            lastAddress[i].last = 00;
+        }
+    }
+
+    for (int i=0; i < 128; i++) {
+
+        if (list == 999) {
+        if (lastAddress[i].address == 0) break;
+        printf("[%lu] 0x%p\t %u:%u\n", i, lastAddress[i].address, lastAddress[i].hour, lastAddress[i].minute);
+        continue;
+        }
+
+        if (list != 0) {
+            printf("[%lu] 0x%p\n", list, lastAddress[list].address);
+            readRawAddr(hProcess, lastAddress[list].address, 999, 0, 0);
+            break;
+        }
+
+        if (lastAddress[i].address == 00) {
+            
+            SYSTEMTIME lpSystemTime;
+            GetLocalTime(&lpSystemTime);
+            lastAddress[i].hour = lpSystemTime.wHour;
+            lastAddress[i].minute = lpSystemTime.wMinute;
+            
+            lastAddress[i].address = address;
+
+            if (i >= 1) {
+                lastAddress[i - 1].last = &(lastAddress[i]);
+            }
+            break;
+        }
+    }
+
+    return 0;
+}
+
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -5723,7 +5799,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             readRawAddr(hProcess, functions[i].begin, functions[i].size, i, 0);
                                             
-                                            printf("\x1b[92m[+]\x1b[0m Functions called: %lu\n\x1b[92m[?]\x1b[0m[%lu] <Enter> Move Forward\t<-> Move Back\tg [function #]\t<q> End\n", numOfFunction, functions[i].num);
+                                            printf("\x1b[92m[+]\x1b[0m Functions called: %lu\n\x1b[92m[?]\x1b[0m[%lu of %lu] <Enter> Move Forward\t<-> Move Back\tg [function #]\t<q> End\n", numOfFunction, functions[i].num, funcCount);
 
                                             allocStdin(AllocatedRegion, offsetHandles + 1000, stdin);
 
@@ -5931,12 +6007,15 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             printf("\033[31m[+]\033[0m DUMP at 0x%p:\n", address);
 
+                                            storeLastDump(0, address, init++, 0);
+
                                             if (isInText == 1) {
                                                 readRawAddr(hProcess, address, 999, 0, 0);
                                                 continue;
                                             }
 
                                             readRawAddr(hProcess, address, 20, 0, 0);
+
                                             continue;
                                         }
 
@@ -6499,6 +6578,21 @@ BOOL WINAPI debug(LPCVOID param) {
                                         else if (mystrcmp(buff, "!rel") == 0) {
                                             printf("Scanning... Will take time\n");
                                             riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 1);
+                                        }
+
+                                        else if (strncmp(buff, "!lastdump", 9) == 0) {
+                                            if (mystrlen(buff) > 9) {
+                                                int num = atoi(buff + 10);
+                                                if (num > 128) continue;
+                                                storeLastDump(hProcess, 0,1,num);
+                                                continue;                                            
+                                            }
+
+                                            storeLastDump(0, 0, 1, 999);
+                                        }
+
+                                        else if (mystrcmp(buff, "!hook") == 0) {
+                                            hookApi(hProcess, "GetProcAddress");
                                         }
 
                                         else {
