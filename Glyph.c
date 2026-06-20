@@ -693,11 +693,21 @@ char* zero(char* buff, char* delimiter) {
     }
 }
 
+void* mystdhandleIN(int num) {
+    void* teb = __readgsqword(0x60);
+    unsigned char* param = *(unsigned long long**)((unsigned char*)teb + 0x20);
+    if (num == 1) { // in
+    return *(unsigned long long**)(param + 32);
+    }
+
+    if (num == 2) { // out
+        return *(unsigned long long**)(param + 40);
+    }
+}
+
 int writeCon(char* buff) {
-    void* handle = GetStdHandle(-11);
-
-    WriteConsoleA(handle, buff, mystrlen(buff), 0, 0);
-
+    void* handle = mystdhandleIN(2);
+    WriteFile(handle, buff, mystrlen(buff), 0, 0);
     return 0;
 }
 
@@ -5197,6 +5207,9 @@ printf("Thread num: %lu\n", (*(unsigned long*)(plockState + 16)));
 return 0;
 }
 
+unsigned char stdinIn[256];
+int doScripting = 0;
+LPVOID fiberMain = 0;
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -5346,6 +5359,17 @@ BOOL WINAPI debug(LPCVOID param) {
                             char* buff = (char*)readAlloc(AllocatedRegion, offsetHandles + 200);
                             zero(buff, '\n');
 
+                            if (doScripting != 0) {
+                                if (doScripting == 2) {
+                                    printf("Script Ran\n");
+                                    SwitchToFiber(fiberMain);     
+                                }
+
+                                strncpy(buff, stdinIn, 99);
+                                printf("%s\n", buff);
+                                doScripting = 2;
+                            }
+
                             // Loading Optional dll for history, tutorial, cmd storage, more to come
                             if (cmdPacksStartup == 0) {
                                 int res = loadCmdPack(buff, 0, 1);
@@ -5419,13 +5443,8 @@ BOOL WINAPI debug(LPCVOID param) {
                                 }
 
                                 else if (mystrcmp(buff, "exit") == 0) {
-                                       pNtTerminateProcess NtTerminateProcess = (pNtTerminateProcess)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtTerminateProcess");
-                                       NTSTATUS status = NtTerminateProcess(NULL, 0);
-                                       if (NT_SUCCESS(status)) {
-                                        printf("See ya!\n");
-                                        return 0;    
-                                       }        
-                                       printf("NTSTATUS: 0x%08X - Error killing\n", status);          
+                                    printf("See ya!\n");
+                                    SwitchToFiber(fiberMain);         
                                 }
 
                                 else if (mystrcmp(buff, "!params") == 0) {
@@ -5605,15 +5624,13 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                     else if (mystrcmp(buff, "kill") == 0) {
                                        pNtTerminateProcess NtTerminateProcess = (pNtTerminateProcess)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtTerminateProcess");
-                                       if (!NtTerminateProcess) return FALSE;
                                        NTSTATUS status = NtTerminateProcess(hProcess, 0);
                                        if (NT_SUCCESS(status)) {
                                         printf("Process[%lu] killed\n", pi.dwProcessId);
-                                        NtTerminateProcess(-1, 0);
-                                        return 0;
-                                       } else {
-                                        printf("NTSTATUS: 0x%08X - Error killing\n", status);
-                                       }   
+                                        printf("See ya!\n");
+                                        SwitchToFiber(fiberMain);
+                                       }                                        
+                                       printf("NTSTATUS: 0x%08X - Error killing\n", status);                                         
                                     }
 
                                     // Run a DLL (Local)
@@ -6898,6 +6915,27 @@ int checkForLnk(wchar_t* path) {
 
 int wmain(int argc, wchar_t* argv[]) {
 
+    void* Inhandle = mystdhandleIN(1);
+    DWORD events = 0;
+    GetNumberOfConsoleInputEvents(Inhandle, &events);
+
+    if (events != 1) {
+    printf("input found %lu\n", events);
+
+    ReadFile(Inhandle, &stdinIn, 256, 0, 0);
+
+    for (int i=0; i < 256; i++) {
+        if (stdinIn[i] == 0x0D) {
+            stdinIn[i] = 00;
+            stdinIn[i+1] = 00;
+            break;
+        }
+    }
+
+    doScripting  = 1;
+
+    }
+
     if (argc < 2) {
         writeCon("\033[35mGlyph - Remote debugger engine by Sleepy\033[0m\n");
         logo();
@@ -6953,7 +6991,7 @@ int wmain(int argc, wchar_t* argv[]) {
 
     setPriv();
 
-    LPVOID fiberMain = ConvertThreadToFiber(NULL); 
+    fiberMain = ConvertThreadToFiber(NULL); 
     LPVOID debugFiber = CreateFiber(0, debug, argv[1]);
 
     if (wcscmp(argv[1], L"-l") == 0) {
@@ -7065,15 +7103,8 @@ int wmain(int argc, wchar_t* argv[]) {
 
     }
 
-    if (debugFiber) {
-        while (1) {
-        SwitchToFiber(debugFiber);
-        DeleteFiber(debugFiber); 
-        } // Launch debugger inside fiber
-          // Cleanup
+    SwitchToFiber(debugFiber);
+    DeleteFiber(debugFiber); 
 
-}
-
-    cs_close(&handle);  // shutdown capstone for clean shutdown
     return 0;
 }
