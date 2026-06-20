@@ -1634,11 +1634,11 @@ return mbi.Protect;
 }
 
 // List syscalls
-int listSyscalls(HANDLE hProcess) {
+int listSyscalls(HANDLE hProcess, void* base) {
 
     for (int p=0; ;p++) {
     unsigned char tmpBase[4096];
-    if (!ReadProcessMemory(hProcess, (unsigned char*)ntdllBase + p*4096, &tmpBase, sizeof(tmpBase), NULL)) {
+    if (!ReadProcessMemory(hProcess, (unsigned char*)base + p*4096, &tmpBase, sizeof(tmpBase), NULL)) {
         printf("Error reading 0x%p\n", tmpBase);
     }
 
@@ -1658,6 +1658,7 @@ int listSyscalls(HANDLE hProcess) {
                 if (tmpBase[num+j] == 0xB8 && tmpBase[num+j+1] == 0xE8 && tmpBase[num+j+2] == 0x01) {
                     end = 1;
                 }
+
             }
 
             //printf("\n<%lu>\n", q);
@@ -5062,7 +5063,54 @@ int riprelcalls(void* hProcess, void* base, int size, int show) {
 // Experiemental
 int hookApi(void* hProcess, char* name) {
 
+    unsigned char jmpStub[12] = { 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0};
+    unsigned char infiniteJump[] = { 0xEB, 0xFE };
+
+    for (int i=0; i < countImport; i++) {
+        
+        if (mystrcmp(imports[i].name, name) == 0) {
+
+        void* (*virt)() = GetProcAddress(GetModuleHandle("KERNEL32.DLL"), "VirtualAllocEx");
+        unsigned char* mem = virt(hProcess, NULL, 2, 0x3000, 0x40);
+
+        WriteProcessMemory(hProcess, mem, infiniteJump, 2, 0);
+
+        *(uintptr_t*)&jmpStub[2]  = (uintptr_t)mem;
+
+        if (WriteProcessMemory(hProcess, imports[i].address, &jmpStub, sizeof(jmpStub), 0)) {
+            printf("Wrote jmp stub to [%s]\n", imports[i].name);
+        }
+
+        return 0;
+        }
+    }
+
+
     return 0;
+}
+
+int bgrep(void* hProcess, void* address, int size, unsigned char* bytes, int bytelen) {
+    
+    unsigned char* in = malloc(size);
+    unsigned long res = 0;
+    ReadProcessMemory(hProcess, address, in, size, &res);
+
+    for (int i=0; i < size; i++) {
+        if (in[i] == bytes[0]) {
+            for (int j=0; j < bytelen; j++) {
+                
+                if (in[i+j] != bytes[j]) break;
+
+                if (j == bytelen - 1) {
+                    printf("0x%p [%p]\n", ((unsigned char*)address + i), i);
+                }
+
+                continue;
+            }
+        }
+    }
+
+    free(in);
 }
 
 typedef struct {
@@ -6098,7 +6146,9 @@ BOOL WINAPI debug(LPCVOID param) {
                                         }
 
                                         else if (mystrcmp(buff, "!stubs") == 0) {
-                                            listSyscalls(hProcess);
+                                            ENTRY* res = read(dllMap, "C:\\Windows\\SYSTEM32\\ntdll.dll");
+                                            if (res == 0) continue;
+                                            listSyscalls(hProcess, res->address);
                                             continue;
                                         }
 
@@ -6580,9 +6630,70 @@ BOOL WINAPI debug(LPCVOID param) {
                                             riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 1);
                                         }
 
-                                        else if (strncmp(buff, "!lastdump", 9) == 0) {
-                                            if (mystrlen(buff) > 9) {
-                                                int num = atoi(buff + 10);
+                                        else if (strncmp(buff, "!bgrep", 6) == 0) {
+
+                                            if (*(wchar_t*)&(buff[7]) != 0x7830) {
+                                                printf("Add 'Ox' to address\n");
+                                                continue;
+                                            }
+
+                                            unsigned char addr[128];  
+                                            int j=0;                                          
+                                            for (j=0; j < 32; j++) {
+                                                if (buff[j+7] == 0x20 || buff[j+7] == 00) {
+                                                    break;
+                                                }
+                                                addr[j] = buff[j+7];
+                                            }
+
+                                            if (j != 18) continue;
+                                            
+                                            addr[j] = 00;
+                                            void* targetAddress = (void*)strtoull(addr, NULL, 0);
+
+                                            unsigned char size[64];
+                                            int p;
+                                            j+=8;
+                                            for (p=0; p < 10; p++) {
+                                                if (buff[j+p] == 00 || buff[j+p] == 0x20) break;
+                                                size[p] = buff[j+p];
+                                            }
+                                            int asize = atoi(size);
+                                            
+                                            char bytes2Write[100];
+                                            for (int i=0; i < 50; i++) {
+                                                bytes2Write[i] = buff[j+i+p+1];
+                                                if (buff[j+i+p+1] == 00) break;
+                                            }
+                                
+                                            size_t len = mystrlen(bytes2Write);
+                                            size_t byteCount = len / 2;
+
+                                            int spacecount = 1;
+                                            unsigned char abytes[100];
+                                            for (size_t i = 0; i < 50; i+=2) {
+                                            if (bytes2Write[i] == 00) break;
+                                            if (bytes2Write[i] == 0x20) {
+                                                spacecount++;
+                                                i+=1;
+                                            } 
+                                            
+                                            sscanf(&bytes2Write[i], "%02X", &abytes[spacecount]);
+                                            }
+
+                                            printf("Bytes: ");
+                                            for (int i=0; i < spacecount; i++) {
+                                                printf("%02X ", *(abytes+i+1));
+                                            }
+                                            printf("\n");
+
+                                            bgrep(hProcess, targetAddress, asize, (abytes+1), spacecount);
+                                            continue;
+                                        }
+
+                                        else if (strncmp(buff, "!dump -last", 12) == 0) {
+                                            if (mystrlen(buff) > 12) {
+                                                int num = atoi(buff + 14);
                                                 if (num > 128) continue;
                                                 storeLastDump(hProcess, 0,1,num);
                                                 continue;                                            
