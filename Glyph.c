@@ -39,7 +39,7 @@ int kernModules() {
     HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
 
     if (h == INVALID_HANDLE_VALUE) {
-        printf("Failed to open driver %u\n", GetLastError());
+        printf("Failed to open driver %u\n", mygetlasterror());
         return 1;
     }
 
@@ -70,7 +70,7 @@ outSection* getKernelSections() {
     HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
 
     if (h == INVALID_HANDLE_VALUE) {
-        printf("Failed to open driver %u\n", GetLastError());
+        printf("Failed to open driver %u\n", mygetlasterror());
         return 1;
     }
 
@@ -96,7 +96,7 @@ int kernelRead(HANDLE procNum, void* address, unsigned char* out, SIZE_T size) {
     HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
 
     if (h == INVALID_HANDLE_VALUE) {
-        printf("Failed to open driver %u\n", GetLastError());
+        printf("Failed to open driver %u\n", mygetlasterror());
         return 1;
     }
 
@@ -123,7 +123,7 @@ int KkernelRead(void* address, int Size) {
     HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
 
     if (h == INVALID_HANDLE_VALUE) {
-        printf("Failed to open driver %u\n", GetLastError());
+        printf("Failed to open driver %u\n", mygetlasterror());
         return 1;
     }
 
@@ -254,9 +254,9 @@ int fillPack(char* name, int Remove, void* hMod) {
 
             if (strcmp(name, "Clip") == 0) {
                 if (!TerminateThread(clipHandle, 0)) {
-                    printf("Error killing thread %lu\n", GetLastError());
+                    printf("Error killing thread %lu\n", mygetlasterror());
                 } else {
-                    printf("Killed thread\n", GetLastError());
+                    printf("Killed thread\n", mygetlasterror());
                 }
                 clipSniper = 0;
                 clipRan = 0;
@@ -739,6 +739,10 @@ int charToWide(char* string, wchar_t* out) {
     return 0;
 }
 
+int mygetlasterror() {
+    return __readgsqword(0x68);
+}
+
 int Score; // Globally Function tracking
 BOOL MalCheck(char* funcName) {
 
@@ -978,7 +982,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                             
                     uint64_t finalComputedAddress = 0;
                     if (!ReadProcessMemory(hProcess, finalAddress, &finalComputedAddress, 8, NULL)) {
-                        //printf("Error reading %lu\n", GetLastError());
+                        //printf("Error reading %lu\n", mygetlasterror());
                         return 0;
                     }
         
@@ -1100,7 +1104,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                 // 999 to catch ret or even jmp
                 unsigned char rawCall[999];
                 if (!ReadProcessMemory(hProcess, (void*)target, &rawCall, sizeof(rawCall), NULL)) {
-                    printf("Error reading memory %lu - %p\n", GetLastError(), bytes);
+                    printf("Error reading memory %lu - %p\n", mygetlasterror(), bytes);
                     continue;
                 }
 
@@ -1299,7 +1303,7 @@ if (!ReadProcessMemory(hProcess, baseAddress, &dh, sizeof(IMAGE_DOS_HEADER), NUL
 
 //checks for a valid PE file
 if (dh.e_magic != IMAGE_DOS_SIGNATURE) {
-    printf("error 3 %lu\n", GetLastError());
+    printf("error 3 %lu\n", mygetlasterror());
     return 1;
 }
 
@@ -1367,12 +1371,12 @@ IMAGE_THUNK_DATA origThunk = {0};
 IMAGE_THUNK_DATA thunkData = {0};
 
 if (!ReadProcessMemory(hProcess, (LPVOID)((BYTE*)origThunkAddr), &origThunk, sizeof(IMAGE_THUNK_DATA), NULL)) {
-    printf("error %lu\n", GetLastError());
+    printf("error %lu\n", mygetlasterror());
     return 1;
 }
 
 if (!ReadProcessMemory(hProcess, (LPVOID)((BYTE*)thunkAddr), &thunkData, sizeof(IMAGE_THUNK_DATA), NULL)) {
-    printf("error 2 %lu\n", GetLastError());
+    printf("error 2 %lu\n", mygetlasterror());
     return 1;
 }
 ///////////////////////////////////////////
@@ -1543,7 +1547,7 @@ for (int i=0; i < exportcount; i++) {
 
     DWORD nameRVA;
     if (!ReadProcessMemory(hProcess, &addressOfNames[i], &nameRVA, sizeof(DWORD), NULL)) {
-    printf("error: %lu", GetLastError());
+    printf("error: %lu", mygetlasterror());
     break;
     }
 
@@ -1776,7 +1780,7 @@ int BreakPoint(void* hProcess, void* address) {
     DWORD old = 0;
     int (*pVirtualProtectEx)() = GetProcAddress(GetModuleHandle("KERNELBASE.dll"), "VirtualProtect");
     if (!VirtualProtectEx(hProcess, address, 16, PAGE_EXECUTE_READWRITE | PAGE_GUARD, &old)) {
-        printf("Failed to change protections %lu\n", GetLastError());
+        printf("Failed to change protections %lu\n", mygetlasterror());
         return 0;
     }
     printf("Breakpoint set at %p\n", address);
@@ -2008,7 +2012,7 @@ BOOL getThreads(DWORD *threadId) {
 
     hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, threadId);
     if (hThread == NULL) {
-        printf("Error: Unable to open thread. %lu\n", GetLastError());
+        printf("Error: Unable to open thread. %lu\n", mygetlasterror());
         return TRUE;
     }
 
@@ -2053,7 +2057,7 @@ BOOL getThreads(DWORD *threadId) {
         printf("SS: 0x%04X\n", context.SegSs);
 
     } else {
-        printf("Error: Unable to get thread context. %lu\n", GetLastError());
+        printf("Error: Unable to get thread context. %lu\n", mygetlasterror());
         return FALSE;
     }
 
@@ -2107,7 +2111,7 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
 
     MY_PEB_LDR_DATA ldrData;
     if (!ReadProcessMemory(hProcess, proc.PebBaseAddress, &pbi, sizeof(pbi), NULL)) {
-        printf("Failed to read PEB from the target process (Error %lu)\n", GetLastError());
+        printf("Failed to read PEB from the target process (Error %lu)\n", mygetlasterror());
         return FALSE;
     }
 
@@ -2154,7 +2158,7 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
     
     size_t bytesread;
     if (!ReadProcessMemory(hProcess, (LPCVOID)pbi.Ldr , &ldrData, sizeof(ldrData), &bytesread)) {
-            printf("error getting ldr, retry... %lu - %lu\n", GetLastError(), bytesread);
+            printf("error getting ldr, retry... %lu - %lu\n", mygetlasterror(), bytesread);
             return FALSE;
     }
     
@@ -2270,7 +2274,7 @@ SID_NAME_USE sidType;
 PSID psdString = NULL;
 ConvertStringSidToSidA(sidstring, &psdString);
 if (!LookupAccountSidA(NULL, psdString, name, &nameLen, domain, &domainLen, &sidType)) {
-    printf("Error looking up SID name and domain %lu\n", GetLastError());
+    printf("Error looking up SID name and domain %lu\n", mygetlasterror());
 }
 
 printf("\x1b[92m[+]\x1b[0m NT %s\\%s\\\n", name, domain);
@@ -2403,7 +2407,7 @@ BOOL breakpoint(DWORD threadId, PVOID address, HANDLE hProcess) {
  
     hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME | THREAD_QUERY_INFORMATION | PROCESS_SUSPEND_RESUME, FALSE, threadId);
     if (hThread == NULL) {
-        printf("Error: Unable to open thread. %lu\n", GetLastError());
+        printf("Error: Unable to open thread. %lu\n", mygetlasterror());
         return TRUE;
     }
 /*
@@ -2427,7 +2431,7 @@ if (status == STATUS_ACCESS_VIOLATION) {
 //printf("status: %lu\n", status);
 
    if (SuspendThread(hThread) == -1) {
-    printf("failed to suspend %lu\n", GetLastError());
+    printf("failed to suspend %lu\n", mygetlasterror());
     return FALSE;
    }
     
@@ -2446,7 +2450,7 @@ if (status == STATUS_ACCESS_VIOLATION) {
 */
 
    if (SuspendThread(hThread) == -1) {
-    printf("failed to suspend %lu\n", GetLastError());
+    printf("failed to suspend %lu\n", mygetlasterror());
     return FALSE;
    }
     
@@ -2471,7 +2475,7 @@ if (status == STATUS_ACCESS_VIOLATION) {
         printf("DR1: 0x%016llX\n", contextBreak.Dr1);
 
     } else {
-        printf("Error: Unable to get thread context. %lu\n", GetLastError());
+        printf("Error: Unable to get thread context. %lu\n", mygetlasterror());
         return FALSE;
     }
 
@@ -2487,7 +2491,7 @@ BOOL getVariables(DWORD procId, int startUp) {
 
 HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, procId);
 if (!hProcess) {
-    printf("error opening process %lu\n", GetLastError());
+    printf("error opening process %lu\n", mygetlasterror());
     return FALSE;
 }
 
@@ -2504,7 +2508,7 @@ if (!ReadProcessMemory(hProcess, peb.Base, &dh, sizeof(IMAGE_DOS_HEADER), NULL))
 
 //checks for a valid PE file
 if (dh.e_magic != IMAGE_DOS_SIGNATURE) {
-    printf("error 3 %lu\n", GetLastError());
+    printf("error 3 %lu\n", mygetlasterror());
     return FALSE;
 }
 
@@ -2534,7 +2538,7 @@ if (startUp == 1) {
 for (int i=0; i < nt.FileHeader.NumberOfSections; i++) {
  
 if (!ReadProcessMemory(hProcess, (BYTE*)peb.Base + sectionOffset + (i * sizeof(IMAGE_SECTION_HEADER)), &section, sizeof(IMAGE_SECTION_HEADER), NULL)) {
-    printf("Error reading section memory %lu", GetLastError());
+    printf("Error reading section memory %lu", mygetlasterror());
     }
 
     BYTE* address = (BYTE*)peb.Base + section.VirtualAddress;
@@ -2558,7 +2562,7 @@ if (!ReadProcessMemory(hProcess, (BYTE*)peb.Base + sectionOffset + (i * sizeof(I
 
     char buffer[1000];
     if (!ReadProcessMemory(hProcess, (BYTE*)peb.Base + section.VirtualAddress, &buffer, sizeof(buffer), NULL)) {
-        printf("Error reading data %lu\n", GetLastError());
+        printf("Error reading data %lu\n", mygetlasterror());
     } else {
     for (int i = 0; i < sizeof(buffer); i++) {
     if (startUp != 1 && myisprint(buffer[i])) {  // Very useful to print only valid chars
@@ -2940,7 +2944,7 @@ GetTokenInformation(newToken, 2, 0, 0, &size);
 group = (TOKEN_GROUPS*)malloc(size);
 
 if (!GetTokenInformation(newToken, 2, group, size, &size)) {
-    printf("Error %lu\n", GetLastError());
+    printf("Error %lu\n", mygetlasterror());
     return 0;
 }
 
@@ -3036,7 +3040,7 @@ NTSTATUS status = NtQuerySystemInformation(64, NULL, 0, &retlen);
 
             HANDLE token = NULL;
             if (!OpenProcessToken(local, TOKEN_DUPLICATE, &token)) {
-                printf("Token cannot be opened %lu\n", GetLastError());
+                printf("Token cannot be opened %lu\n", mygetlasterror());
                 continue;
             }
 
@@ -3058,7 +3062,7 @@ NTSTATUS status = NtQuerySystemInformation(64, NULL, 0, &retlen);
             SecurityImpersonation,
             TokenPrimary,
             &newToken)) {
-            printf("DuplicateTokenEx failed: %lu\n", GetLastError());
+            printf("DuplicateTokenEx failed: %lu\n", mygetlasterror());
             continue;
             } 
 
@@ -3484,7 +3488,7 @@ BOOL docs() {
 if (ShellExecuteExW(&sei)) {
     wprintf(L"Browser launched successfully.\n");
 } else {
-    wprintf(L"Failed to launch browser. Error: %lu\n", GetLastError());
+    wprintf(L"Failed to launch browser. Error: %lu\n", mygetlasterror());
 }
 }
 
@@ -3759,7 +3763,7 @@ if (!ReadProcessMemory(hProcess, ntdllBase, &dh, sizeof(IMAGE_DOS_HEADER), NULL)
 
 //checks for a valid PE file
 if (dh.e_magic != IMAGE_DOS_SIGNATURE) {
-    printf("error 3 %lu\n", GetLastError());
+    printf("error 3 %lu\n", mygetlasterror());
     return FALSE;
 } else if (size2read != 0) {
     printf("\x1b[92m[+]\x1b[0m Valid PE file: YES-%x\n", dh.e_magic);
@@ -3781,7 +3785,7 @@ for (int i=0; i < nt.FileHeader.NumberOfSections; i++) {
 
     
 if (!ReadProcessMemory(hProcess, (BYTE*)ntdllBase + sectionOffset + (i * sizeof(IMAGE_SECTION_HEADER)), &section, sizeof(IMAGE_SECTION_HEADER), NULL)) {
-    printf("Error reading section memory %lu", GetLastError());
+    printf("Error reading section memory %lu", mygetlasterror());
     }
 
     BYTE* address = (BYTE*)ntdllBase + section.VirtualAddress;
@@ -3804,7 +3808,7 @@ if (!ReadProcessMemory(hProcess, (BYTE*)ntdllBase + sectionOffset + (i * sizeof(
 
     char* buffer = malloc(section.SizeOfRawData);
     if (!ReadProcessMemory(hProcess, (BYTE*)ntdllBase + section.VirtualAddress, buffer, section.SizeOfRawData, NULL)) {
-        printf("Error reading data %lu\n", GetLastError());
+        printf("Error reading data %lu\n", mygetlasterror());
     } else {
         for (int i = 0; i < size2read; i++) {
             if (myisprint(buffer[i])) { 
@@ -3846,7 +3850,7 @@ if (!ReadProcessMemory(hProcess, ntdllBase, &dh, sizeof(IMAGE_DOS_HEADER), NULL)
 
 //checks for a valid PE file
 if (dh.e_magic != IMAGE_DOS_SIGNATURE) {
-    printf("error 3 %lu\n", GetLastError());
+    printf("error 3 %lu\n", mygetlasterror());
     return FALSE;
 } else {
     printf("\x1b[92m[+]\x1b[0m Valid PE file: YES-%x\n", dh.e_magic);
@@ -3868,7 +3872,7 @@ for (int i=0; i < nt.FileHeader.NumberOfSections; i++) {
 
     
 if (!ReadProcessMemory(hProcess, (BYTE*)ntdllBase + sectionOffset + (i * sizeof(IMAGE_SECTION_HEADER)), &section, sizeof(IMAGE_SECTION_HEADER), NULL)) {
-    printf("Error reading section memory %lu", GetLastError());
+    printf("Error reading section memory %lu", mygetlasterror());
     }
 
     if (mystrcmp(section.Name, ".data") == 0) {
@@ -3880,7 +3884,7 @@ if (!ReadProcessMemory(hProcess, (BYTE*)ntdllBase + sectionOffset + (i * sizeof(
 
     LIST_ENTRY buffer;
     if (!ReadProcessMemory(hProcess, (BYTE*)ntdllBase + section.VirtualAddress, &buffer, sizeof(buffer), NULL)) {
-        printf("Error reading data %lu\n", GetLastError());
+        printf("Error reading data %lu\n", mygetlasterror());
     }
 
     // Common list walk
@@ -3912,7 +3916,7 @@ return 0;
 
 int writeMem(HANDLE hProcess, void* address, BYTE* data, int size) {
     if (!WriteProcessMemory(hProcess, address, data, size, NULL)) {
-        printf("Error writing to process memory at 0x%p: Error %lu\n", address, GetLastError());
+        printf("Error writing to process memory at 0x%p: Error %lu\n", address, mygetlasterror());
     }
     return 0;
 }
@@ -4487,7 +4491,7 @@ int getEprocOffset() {
     HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
 
     if (h == INVALID_HANDLE_VALUE) {
-        printf("Failed to open driver %u\n", GetLastError());
+        printf("Failed to open driver %u\n", mygetlasterror());
         return 1;
     }
 
@@ -5093,7 +5097,11 @@ int bgrep(void* hProcess, void* address, int size, unsigned char* bytes, int byt
     
     unsigned char* in = malloc(size);
     unsigned long res = 0;
-    ReadProcessMemory(hProcess, address, in, size, &res);
+    if (!ReadProcessMemory(hProcess, address, in, size, &res)) {
+        printf("Bad address 0x%p [%lu] Error: %lu\n", address, size, mygetlasterror());
+        free(in);
+        return 2;
+    }
 
     for (int i=0; i < size; i++) {
         if (in[i] == bytes[0]) {
@@ -5165,6 +5173,30 @@ int storeLastDump(void* hProcess, void* address, int init, int list) {
     return 0;
 }
 
+int checkCritcalSectionInternal() {
+
+void* teb = __readgsqword(0x30);
+unsigned long long res = *(unsigned long long**)((unsigned char*)teb + 0x1850);
+
+printf("Lock struct: %p\n", res);                                            
+
+for (int i=0; i < 8; i++) {
+unsigned long long plockState = (*(unsigned long long**)(res + (i * 8)));
+if (plockState == 0) {
+    if (i == 0) return 1;
+    return 0;
+}
+                                    
+printf("Lock entry address: %p\n", plockState);
+printf("Dbg info: %p\n", (*(unsigned long long**)(plockState)));
+printf("idk: %p\n", (*(unsigned long*)(plockState + 8)));
+printf("Thread lock count: %u\n", (*(wchar_t*)(plockState + 12)));
+printf("Thread num: %lu\n", (*(unsigned long*)(plockState + 16)));
+}
+
+return 0;
+}
+
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -5183,7 +5215,7 @@ BOOL WINAPI debug(LPCVOID param) {
         printf("Error Wrong Process Name\n");
         }
 
-    } else if (wcscmp(process, L"-id") == 0) {  // Connect
+        } else if (wcscmp(process, L"-id") == 0) {  // Connect
         pi.dwProcessId = wcstol(secondParam, NULL, 10);
         printf("%lu\n", pi.dwProcessId);
         GetProc(NULL, pi.dwProcessId);
@@ -5210,7 +5242,7 @@ BOOL WINAPI debug(LPCVOID param) {
         
         hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_ALL_ACCESS | PROCESS_SUSPEND_RESUME , FALSE, pi.dwProcessId);
         if (!hProcess) {
-            printf("Problem starting the debugger %lu\n", GetLastError());
+            printf("Problem starting the debugger %lu\n", mygetlasterror());
         } else {
 
             typedef void* (__stdcall *pNtResumeProcess)(void* hProc);
@@ -5470,7 +5502,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                 // CPU info
                                     else if (mystrcmp(buff, "!cpu") == 0) {
                                         if (!Getcpuinfo()) {
-                                            printf("error %lu", GetLastError());
+                                            printf("error %lu", mygetlasterror());
                                         }
                                         continue;
                                     }
@@ -5554,7 +5586,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                     //
                                     //     BYTE cc[5] = {0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
                                     //     if (!WriteProcessMemory(hProcess, targetAddress, cc, sizeof(cc), NULL)) {
-                                    //         printf("Failed to write breakpoint at %s: error %lu\n", breakBuffer, GetLastError());
+                                    //         printf("Failed to write breakpoint at %s: error %lu\n", breakBuffer, mygetlasterror());
                                     //     } else {
                                     //         printf("Wrote a breakpoint at %s\n", breakBuffer);
                                     //     }
@@ -6367,7 +6399,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             
                                             void* hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, threadId);
                                             if (hThread == NULL) {
-                                                printf("Error: Unable to open thread. %lu\n", GetLastError());
+                                                printf("Error: Unable to open thread. %lu\n", mygetlasterror());
                                                 return TRUE;
                                             }
 
@@ -6377,7 +6409,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             stackcon.ContextFlags = CONTEXT_FULL | CONTEXT_AMD64;
                                                 
                                             if (!GetThreadContext(hThread, &stackcon)) {
-                                                printf("Error getting context %lu\n", GetLastError());
+                                                printf("Error getting context %lu\n", mygetlasterror());
                                                 continue;
                                             }
 
@@ -6510,7 +6542,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             
                                             HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
                                             if (h == INVALID_HANDLE_VALUE) {
-                                                printf("Failed to open driver %u\n", GetLastError());
+                                                printf("Failed to open driver %u\n", mygetlasterror());
                                                 return 1;
                                             }
 
@@ -6633,7 +6665,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                         else if (strncmp(buff, "!bgrep", 6) == 0) {
 
                                             if (*(wchar_t*)&(buff[7]) != 0x7830) {
-                                                printf("Add 'Ox' to address\n");
+                                                printf("!bgrep <address> <size> <bytes>\n");
                                                 continue;
                                             }
 
@@ -6646,7 +6678,10 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 addr[j] = buff[j+7];
                                             }
 
-                                            if (j != 18) continue;
+                                            if (j != 18) {
+                                                printf("Invalid address\n");
+                                                continue;
+                                            }
                                             
                                             addr[j] = 00;
                                             void* targetAddress = (void*)strtoull(addr, NULL, 0);
@@ -6655,10 +6690,14 @@ BOOL WINAPI debug(LPCVOID param) {
                                             int p;
                                             j+=8;
                                             for (p=0; p < 10; p++) {
-                                                if (buff[j+p] == 00 || buff[j+p] == 0x20) break;
+                                                if (buff[j+p] == 00 || buff[j+p] == 0x20) {
+                                                    size[p] = 00;
+                                                    break;
+                                                }
                                                 size[p] = buff[j+p];
                                             }
                                             int asize = atoi(size);
+
                                             
                                             char bytes2Write[100];
                                             for (int i=0; i < 50; i++) {
@@ -6687,13 +6726,18 @@ BOOL WINAPI debug(LPCVOID param) {
                                             }
                                             printf("\n");
 
+                                            if (asize >= 1000000000) {
+                                                printf("Max Size hit\n");
+                                                continue;
+                                            }
+
                                             bgrep(hProcess, targetAddress, asize, (abytes+1), spacecount);
                                             continue;
                                         }
 
-                                        else if (strncmp(buff, "!dump -last", 12) == 0) {
-                                            if (mystrlen(buff) > 12) {
-                                                int num = atoi(buff + 14);
+                                        else if (strncmp(buff, "!dump -last", 11) == 0) {
+                                            if (mystrlen(buff) >= 13) {
+                                                int num = atoi(buff + 12);
                                                 if (num > 128) continue;
                                                 storeLastDump(hProcess, 0,1,num);
                                                 continue;                                            
@@ -6760,9 +6804,9 @@ int setPriv() {
 
     AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
 
-    if (GetLastError() == ERROR_SUCCESS) {
+    if (mygetlasterror() == ERROR_SUCCESS) {
     fillPack("God Mode - SE Debug", 0, 0);
-    printf("Running in god mode %lu\n", GetLastError());
+    printf("Running in god mode %lu\n", mygetlasterror());
     }
 
     return 0;
@@ -6972,7 +7016,7 @@ int wmain(int argc, wchar_t* argv[]) {
         STARTUPINFO si = { sizeof(si) };
         PROCESS_INFORMATION pi = { 0 };
         if (!CreateProcessW(argv[2], NULL, NULL, NULL, 0, 0, NULL, NULL, &si, &pi)) {
-            printf("Error creating process %lu\n", GetLastError());
+            printf("Error creating process %lu\n", mygetlasterror());
             return 1;
         } else {
             printf("Process created!, -c <ProcName> to connect");
