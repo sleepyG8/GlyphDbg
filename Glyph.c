@@ -5209,6 +5209,19 @@ return 0;
 
 unsigned char stdinIn[256];
 int doScripting = 0;
+int checkForScript(char* buff) {
+    if (doScripting != 0) {
+        if (doScripting == 2) {
+            return 1;                            
+        }
+        strncpy(buff, stdinIn, 99);
+        printf("%s\n", buff);
+        doScripting = 2;
+    }
+    return 0;
+}
+
+LARGE_INTEGER fq, co, end;
 LPVOID fiberMain = 0;
 BOOL WINAPI debug(LPCVOID param) {
 
@@ -5359,15 +5372,11 @@ BOOL WINAPI debug(LPCVOID param) {
                             char* buff = (char*)readAlloc(AllocatedRegion, offsetHandles + 200);
                             zero(buff, '\n');
 
-                            if (doScripting != 0) {
-                                if (doScripting == 2) {
-                                    printf("Script Ran\n");
-                                    SwitchToFiber(fiberMain);     
-                                }
-
-                                strncpy(buff, stdinIn, 99);
-                                printf("%s\n", buff);
-                                doScripting = 2;
+                            if (checkForScript(buff) == 1) {
+                                QueryPerformanceCounter(&end);
+                                double elapsedMs = (double)(end.QuadPart - co.QuadPart) * 1000.0 / fq.QuadPart;
+                                printf("\nScript Ran %.6f\n", *(unsigned long long*)&elapsedMs);
+                                SwitchToFiber(fiberMain);
                             }
 
                             // Loading Optional dll for history, tutorial, cmd storage, more to come
@@ -6829,7 +6838,6 @@ int setPriv() {
     return 0;
 
 }
-
 int slpWalkDisk(char* path) {
     FILE* f = fopen(path, "rb");
     fseek(f, 0, SEEK_END);
@@ -6876,7 +6884,6 @@ int slpWalkDisk(char* path) {
     }
     return 0;
 }
-
 int checkForSlp(char* path) {
     int size = mystrlen(path);
     if (path[size - 3] != 's') return 0;
@@ -6912,15 +6919,14 @@ int checkForLnk(wchar_t* path) {
     getchar();
     return 1;
 }
-
-int wmain(int argc, wchar_t* argv[]) {
-
+int checkCommandLineForScript() {
+    
     void* Inhandle = mystdhandleIN(1);
-    DWORD events = 0;
-    GetNumberOfConsoleInputEvents(Inhandle, &events);
+    DWORD type = GetFileType(Inhandle);
+    if (type != FILE_TYPE_PIPE) return 0;
 
-    if (events != 1) {
-    printf("input found %lu\n", events);
+    QueryPerformanceFrequency(&fq);
+    QueryPerformanceCounter(&co);
 
     ReadFile(Inhandle, &stdinIn, 256, 0, 0);
 
@@ -6932,8 +6938,14 @@ int wmain(int argc, wchar_t* argv[]) {
         }
     }
 
-    doScripting  = 1;
+    doScripting = 1;
+    return 1;
+}
 
+int wmain(int argc, wchar_t* argv[]) {
+
+    if (checkCommandLineForScript() == 1) {
+        writeCon("Running script\n");
     }
 
     if (argc < 2) {
