@@ -1819,6 +1819,32 @@ int walkHeap(void* hProcess, void* heapAddr) {
     return 0;
 }
 
+int dumpPointersRaw(unsigned char* bytes, int size) {
+    
+    for (int i=0; i < size; i+=8) {
+        unsigned long long pointer = *((unsigned long long**)(bytes + i));
+        if ((pointer >> 40 == 0x7F && ((pointer >> 36) & 0xF) == 0x0F) || ((pointer >> 56 == 0xFF))) { 
+
+            char regionName[32];
+            int found = 0;
+            for (int p=0; p < 10; p++) {
+                if (pointer <= codeRegions->codeBounds[p].end && pointer >= codeRegions->codeBounds[p].start) {
+                    strcpy(regionName, codeRegions->codeBounds[p].name);
+                    found = 1;
+                }
+            }
+
+        if (found == 1) {
+        printf("Pointer found: 0x%p RVA: [%p]\t Section: %s\n", *((unsigned long long**)(bytes + i)), i, regionName);
+        } else {
+        printf("Pointer found: 0x%p RVA: [%p]\n", *((unsigned long long**)(bytes + i)), i);
+        }
+
+        }
+    }
+    return 0;
+}
+
 // Reading Raw address and parsing the data
 BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum, DWORD id) {
 
@@ -1909,6 +1935,11 @@ BOOL readRawAddr(HANDLE hProcess, LPVOID base, SIZE_T bytesToRead, int funcNum, 
             }
             break;
         }
+    }
+
+    if (aggresive == 1) {
+        printf("\n------\x1b[92m[+]Pointers:\x1b[0m------\n");
+        dumpPointersRaw(buff, bytesToRead);
     }
 
     // capstone
@@ -5221,6 +5252,44 @@ int checkForScript(char* buff) {
     return 0;
 }
 
+unsigned long long charToAddress(char* buff) {
+
+    int spaceCount = 0;
+    unsigned long long addr = 0;
+    for (int i=0; i < 23; i+=2) {
+
+        if (buff[i] == 0x20) {
+            i--;
+            spaceCount++;
+            continue;
+        }
+
+        if (buff[i] >= '0' && buff[i] <= '9') {
+            buff[i] = buff[i] - '0';
+        } else if (buff[i] >= 'A' && buff[i] <= 'F') {
+            buff[i] = buff[i] - 'A' + 10;
+        } else {
+            buff[i] = buff[i] - 'a' + 10;
+        }
+
+        if (buff[i+1] >= '0' && buff[i+1] <= '9') {
+            buff[i+1] = buff[i+1] - '0';
+        } else if (buff[i+1] >= 'A' && buff[i+1] <= 'F') {
+            buff[i+1] = buff[i+1] - 'A' + 10;
+        } else {
+            buff[i+1] = buff[i+1] - 'a' + 10;
+        }
+
+        unsigned char byte = (buff[i] << 4 | buff[i+1]);
+        addr = (addr << 8) | byte;
+
+    }
+
+    if (spaceCount != 7) return 0;
+
+    return addr;
+}
+
 LARGE_INTEGER fq, co, end;
 LPVOID fiberMain = 0;
 BOOL WINAPI debug(LPCVOID param) {
@@ -6777,6 +6846,47 @@ BOOL WINAPI debug(LPCVOID param) {
                                         }
 
                                         else {
+
+                                            unsigned long long backwards = charToAddress(buff);
+                                            if (backwards != 0) {                                                
+                                                readRawAddr(hProcess, _byteswap_uint64(backwards), 999, 0, 0);
+
+                                                void* point = __readgsqword(0x17c8);
+                                                printf("point: 0x%p\n", *(unsigned long long**)point);
+
+                                                void* next = *(unsigned long long**)point;  // pointer to tls slots
+
+                                                void* tlsSlot = *(unsigned long long**)((unsigned char*)next+8); // linked list go to next
+                                                
+                                                for (int i=0; i < 200; i++) {                                                    
+                                                    printf("%02X ", *((unsigned char*)tlsSlot+i));  // print slot
+                                                }
+                                                printf("\n\n");
+
+                                                void* onto = *(unsigned long long**)((unsigned char*)tlsSlot+8); // 
+
+                                                LIST_ENTRY* head = (LIST_ENTRY*)onto;
+                                                LIST_ENTRY* cur = head->Flink;
+
+                                                for (int i=0; i < 10; i++) {
+
+                                                    printf("Entry: %p\n", ((unsigned char*)cur + i));
+                                                    for (int i=0; i < 400; i++) {
+                                                    printf("%02X ", *((unsigned char*)cur+i));  // print slot
+                                                    }
+                                                    printf("\n\n");
+
+                                                    cur = cur->Flink;
+                                                }
+
+                                                // void* check = *(unsigned long long**)((unsigned char*)onto+8);
+                                                // printf("%p\n", check);
+                                                // for (int i=0; i < 600; i++) {
+                                                //     printf("%02X ", *((unsigned char*)check+i));
+                                                // }
+
+                                                continue;
+                                            }
 
                                             if (checkForRva(buff) == 0) continue;
 
