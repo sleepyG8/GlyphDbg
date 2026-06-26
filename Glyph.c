@@ -5290,6 +5290,56 @@ unsigned long long charToAddress(char* buff) {
     return addr;
 }
 
+int makeMusic(unsigned char* buff, int size) {
+    void* hMod = LoadLibraryA("makeWavGlyph.dll");
+    if (!hMod) return 0;
+    int (*music)() = GetProcAddress(hMod, "music"); 
+    music(buff, size);
+    return 0;
+}
+
+// list fills as debugger progresses?? run a command and try
+int tlsLoaderInternal() {
+
+void* point = __readgsqword(0x17c8);
+if (point == 00) return 0;
+
+printf("point: 0x%p\n", *(unsigned long long**)point);
+
+void* next = *(unsigned long long**)point;  // pointer to tls slots
+
+void* tlsSlot = *(unsigned long long**)((unsigned char*)next+8); // linked list go to next
+                                                
+for (int i=0; i < 200; i++) {                                                    
+    printf("%02X ", *((unsigned char*)tlsSlot+i));  // print slot
+}
+printf("\n\n");
+
+void* onto = *(unsigned long long**)((unsigned char*)tlsSlot+8); // 
+
+LIST_ENTRY* head = (LIST_ENTRY*)onto;
+LIST_ENTRY* cur = head->Flink;
+
+for (int i=0; i < 10; i++) {
+
+    printf("Entry: %p\n", ((unsigned char*)cur + i));
+    for (int i=0; i < 400; i++) {
+    printf("%02X ", *((unsigned char*)cur+i));  // print slot
+    }
+    printf("\n\n");
+    cur = cur->Flink;
+}
+
+// void* check = *(unsigned long long**)((unsigned char*)onto+8);
+// printf("%p\n", check);
+// for (int i=0; i < 600; i++) {
+//     printf("%02X ", *((unsigned char*)check+i));
+// }
+
+
+
+}
+
 LARGE_INTEGER fq, co, end;
 LPVOID fiberMain = 0;
 BOOL WINAPI debug(LPCVOID param) {
@@ -6638,7 +6688,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             HANDLE h = CreateFileW(L"\\\\.\\Glyph", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
                                             if (h == INVALID_HANDLE_VALUE) {
                                                 printf("Failed to open driver %u\n", mygetlasterror());
-                                                return 1;
+                                                continue;
                                             }
 
                                             uint64_t address = {0};
@@ -6841,52 +6891,18 @@ BOOL WINAPI debug(LPCVOID param) {
                                             storeLastDump(0, 0, 1, 999);
                                         }
 
-                                        else if (mystrcmp(buff, "!hook") == 0) {
-                                            hookApi(hProcess, "GetProcAddress");
+                                        else if (mystrcmp(buff, "!tls") == 0) {
+                                            tlsLoaderInternal();
+                                        }
+
+                                        else if (mystrcmp(buff, "!sonify") == 0) {
+                                            unsigned char* musicbuff = malloc((unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start);
+                                            ReadProcessMemory(hProcess, codeRegions->codeBounds[0].start, musicbuff, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
+                                            makeMusic(musicbuff, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start);
+                                            free(musicbuff);
                                         }
 
                                         else {
-
-                                            unsigned long long backwards = charToAddress(buff);
-                                            if (backwards != 0) {                                                
-                                                readRawAddr(hProcess, _byteswap_uint64(backwards), 999, 0, 0);
-
-                                                void* point = __readgsqword(0x17c8);
-                                                printf("point: 0x%p\n", *(unsigned long long**)point);
-
-                                                void* next = *(unsigned long long**)point;  // pointer to tls slots
-
-                                                void* tlsSlot = *(unsigned long long**)((unsigned char*)next+8); // linked list go to next
-                                                
-                                                for (int i=0; i < 200; i++) {                                                    
-                                                    printf("%02X ", *((unsigned char*)tlsSlot+i));  // print slot
-                                                }
-                                                printf("\n\n");
-
-                                                void* onto = *(unsigned long long**)((unsigned char*)tlsSlot+8); // 
-
-                                                LIST_ENTRY* head = (LIST_ENTRY*)onto;
-                                                LIST_ENTRY* cur = head->Flink;
-
-                                                for (int i=0; i < 10; i++) {
-
-                                                    printf("Entry: %p\n", ((unsigned char*)cur + i));
-                                                    for (int i=0; i < 400; i++) {
-                                                    printf("%02X ", *((unsigned char*)cur+i));  // print slot
-                                                    }
-                                                    printf("\n\n");
-
-                                                    cur = cur->Flink;
-                                                }
-
-                                                // void* check = *(unsigned long long**)((unsigned char*)onto+8);
-                                                // printf("%p\n", check);
-                                                // for (int i=0; i < 600; i++) {
-                                                //     printf("%02X ", *((unsigned char*)check+i));
-                                                // }
-
-                                                continue;
-                                            }
 
                                             if (checkForRva(buff) == 0) continue;
 
@@ -6910,6 +6926,12 @@ BOOL WINAPI debug(LPCVOID param) {
                                             }
 
                                             if (foundExp != 0) continue;
+
+                                            unsigned long long backwards = charToAddress(buff);
+                                            if (backwards != 0) {                                                
+                                                readRawAddr(hProcess, _byteswap_uint64(backwards), 999, 0, 0);
+                                                continue;
+                                            }
 
                                             checkMatch(buff);   // guesser
                                         }
