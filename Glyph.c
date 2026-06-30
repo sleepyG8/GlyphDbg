@@ -584,7 +584,7 @@ typedef struct {
     char name[128];
     FARPROC address;
 } Imports;
-Imports imports[500];
+__declspec(dllexport) Imports imports[500];
 size_t countImport = 0;
 
 // using cpuid to pull CPU vendor name
@@ -1253,7 +1253,7 @@ typedef struct {
     unsigned long exportCount;
 } Dlls;
 
-Dlls modules[300];
+__declspec(dllexport) Dlls modules[300];
 size_t countModules = 0;
 
 // Listing all running proc
@@ -1285,7 +1285,7 @@ typedef struct {
     void* address;
 } HookedFunctions;
 
-HookedFunctions hooked[100];
+__declspec(dllexport) HookedFunctions hooked[100];
 int counthooked = 0;   // Global
 
 int breakpointSet = 0; // Global
@@ -1831,6 +1831,13 @@ int dumpPointersRaw(unsigned char* bytes, int size) {
                 if (pointer <= codeRegions->codeBounds[p].end && pointer >= codeRegions->codeBounds[p].start) {
                     strcpy(regionName, codeRegions->codeBounds[p].name);
                     found = 1;
+                }
+            }
+
+            for (int p=0; p < countModules; p++) {
+                if (pointer == modules[p].modAddress) {
+                    printf("[+] %S\n", modules[p].modName);
+                    break;
                 }
             }
 
@@ -2657,11 +2664,13 @@ typedef struct {
     long priority;
     unsigned long state;
 } Threads;
-Threads* thread;
+
+__declspec(dllexport) Threads* thread;
+
+DWORD threadid;
+int alrAllocatedThreadStruct = 0;
 
 // Get processes by name and return its ID 
-DWORD threadid; // Global
-int alrAllocatedThreadStruct = 0;
 DWORD GetProc(wchar_t* procName, DWORD procId) {
 
     if (alrAllocatedThreadStruct == 0) {
@@ -2706,13 +2715,15 @@ DWORD GetProc(wchar_t* procName, DWORD procId) {
         PSYSTEM_THREAD_INFORMATION threads = (PSYSTEM_THREAD_INFORMATION)(info + 1);
 
         for (int i=0; i < info->NumberOfThreads; i++) {
-        if (i > 256) break;
+        if (i >= 254) break;
         thread[i].address = threads[i].ClientId.UniqueThread;
         thread[i].priority = threads[i].Priority;
         thread[i].state = threads[i].ThreadState;
         }
 
-        thread[info->NumberOfThreads+1].state = 999;        // Delimiter 
+        if (info->NumberOfThreads+1 <= 254) {
+        thread[info->NumberOfThreads+1].state = 999;        // Delimiter
+        } 
 
         threadid = threads[0].ClientId.UniqueThread;
         //printf("%lu\n", info->UniqueProcessId);
@@ -2728,13 +2739,15 @@ DWORD GetProc(wchar_t* procName, DWORD procId) {
         PSYSTEM_THREAD_INFORMATION threads = (PSYSTEM_THREAD_INFORMATION)(info + 1);
 
         for (int i=0; i < info->NumberOfThreads; i++) {
-        if (i > 256) break;
+        if (i >= 254) break;
         thread[i].address = threads[i].ClientId.UniqueThread;
         thread[i].priority = threads[i].Priority;
         thread[i].state = threads[i].ThreadState;
         }
 
+        if (info->NumberOfThreads+1 <= 254) {
         thread[info->NumberOfThreads+1].state = 999;        // Delimiter 
+        }
 
         threadid = threads[0].ClientId.UniqueThread;
         //threadid = threads[info->NumberOfThreads - (info->NumberOfThreads - 1)].ClientId.UniqueThread;
@@ -4844,7 +4857,7 @@ typedef struct {
     sexportAddr addr[300];
 } sexportData;
 
-sexportData exportData[300];
+__declspec(dllexport) sexportData exportData[1000]; // may need to adjust I want all called exports
 
 int cmdCheckForImportString(void* hProcess, char* buff, HASHMAP* map) {
 
@@ -4872,7 +4885,7 @@ int cmdCheckForImportString(void* hProcess, char* buff, HASHMAP* map) {
             // }
 
             for (int d=0; ; d++) {
-                if (exportData[d].timesCalled == 0 || d >= 300) break;
+                if (exportData[d].timesCalled == 0 || d >= 1000) break;
                 if (strstr(exportData[d].name, buff) != 0) {
                 printf("Times called: %lu\n", exportData[d].timesCalled);
 
@@ -5071,14 +5084,14 @@ int riprelcalls(void* hProcess, void* base, int size, int show) {
                     break;
                     }
 
-                    for (int s=0; s < 300; s++) {
+                    for (int s=0; s < 1000; s++) {
                         if (exportData[s].timesCalled == 00) {
                             exportData[s].addr[exportData[s].timesCalled].address = (unsigned char*)base+i;
                             exportData[s].timesCalled++;
                             strcpy(exportData[s].name, modules[d].export[z].name);
                             break;
                         } else if (mystrcmp(exportData[s].name, modules[d].export[z].name) == 0) {
-                            if (exportData[s].timesCalled <= 300) {
+                            if (exportData[s].timesCalled <= 299) {
                             exportData[s].addr[exportData[s].timesCalled].address = (unsigned char*)base+i;
                             exportData[s].timesCalled++;
                             }
@@ -5298,11 +5311,80 @@ int makeMusic(unsigned char* buff, int size) {
     return 0;
 }
 
+typedef struct _THREAD_BASIC_INFORMATION {
+    NTSTATUS ExitStatus;
+    PVOID TebBaseAddress; // the goods
+    CLIENT_ID ClientId;
+    KAFFINITY AffinityMask;
+    KPRIORITY Priority;
+    KPRIORITY BasePriority;
+} _THREAD_BASIC_INFORMATION;
+
+typedef NTSTATUS (NTAPI *NtQueryInformationThread_t)(
+    HANDLE ThreadHandle,
+    THREADINFOCLASS ThreadInformationClass,
+    PVOID ThreadInformation,
+    ULONG ThreadInformationLength,
+    PULONG ReturnLength
+);
+
+// Found this struct at 0x17cd. Ive mapped it and will write a paper on it.
+// It is related to tls and dll metadata. If pointer == 00 then no Dlls have
+// been loaded by the loader after startup via LoadLibrary.
+int DllsWereLoaded(void* hProcess, int threadNum, int iteration) {
+
+   void* hThread = OpenThread(THREAD_ALL_ACCESS, 0, threadNum);
+   void* (*qit)() = (NtQueryInformationThread_t)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQueryInformationThread");
+
+   unsigned char tbi[0x30];
+   NTSTATUS status = qit(hThread, 0, &tbi, sizeof(tbi), NULL);
+
+   if (!NT_SUCCESS(status)) return 2;
+
+   unsigned long long teb = *(unsigned long long**)((unsigned char*)tbi + 8);
+   printf("teb: 0x%p\n", teb);
+
+   if (iteration == 0) { 
+   printf("peb: 0x%p\n", (unsigned char*)teb - 0x1000);
+   }
+
+   unsigned long long pointer = 00;
+   if (!ReadProcessMemory(hProcess, (unsigned char*)teb + 0x17c8, &pointer, sizeof(pointer), NULL)) return 3;
+
+   unsigned char data[0x20];
+   if (!ReadProcessMemory(hProcess, pointer, &data, sizeof(data), 0)) return 3;
+
+   for (int i=0; i < 24; i+=8) {
+    printf("%p\n", *(unsigned long long**)(data + i));
+
+    if (i == 16) {
+        unsigned long long DllBaseAddress = *(unsigned long long**)(data + i);
+
+        unsigned long long dlladdr = 0;
+        ReadProcessMemory(hProcess, (unsigned char*)DllBaseAddress + 0x10, &dlladdr, 500, 0);
+
+        if (!dlladdr) continue;
+
+        unsigned char dllBuff[1500];
+        ReadProcessMemory(hProcess, dlladdr, &dllBuff, sizeof(dllBuff), 0);
+
+        dumpPointersRaw(dllBuff, sizeof(dllBuff));
+
+    }
+
+   }
+
+   CloseHandle(hThread);
+   return 0;
+}
+
 // list fills as debugger progresses?? run a command and try
-int tlsLoaderInternal() {
+void* tlsLoaderInternal(int loadlibraryCheck) {
 
 void* point = __readgsqword(0x17c8);
 if (point == 00) return 0;
+
+if (loadlibraryCheck == 1) return point;
 
 printf("point: 0x%p\n", *(unsigned long long**)point);
 
@@ -5315,15 +5397,23 @@ for (int i=0; i < 200; i++) {
 }
 printf("\n\n");
 
-void* onto = *(unsigned long long**)((unsigned char*)tlsSlot+8); // 
+void* onto = *(unsigned long long**)((unsigned char*)tlsSlot);
 
 LIST_ENTRY* head = (LIST_ENTRY*)onto;
 LIST_ENTRY* cur = head->Flink;
 
-for (int i=0; i < 10; i++) {
+for (int i=0; ; i++) {
 
-    printf("Entry: %p\n", ((unsigned char*)cur + i));
-    for (int i=0; i < 400; i++) {
+    if (cur == head) {
+        break;
+    }
+
+    printf("Loader TLS Entry: %p\n", ((unsigned char*)cur + i));
+
+    unsigned long long dllStruct = *(unsigned long long**)((unsigned char*)cur + 16);
+    printf("Dll struct: %p\n", *(unsigned long long**)((unsigned char*)cur + 16));
+
+    for (int i=0; i < 24; i++) {
     printf("%02X ", *((unsigned char*)cur+i));  // print slot
     }
     printf("\n\n");
@@ -5340,8 +5430,29 @@ for (int i=0; i < 10; i++) {
 
 }
 
+// This buffer is exported and used for the API
+__declspec(dllexport) unsigned char apiIn[1028];
+
+// Check if API usage first
+void* checkForAPIUsage(int isAPI) {
+
+if (isAPI == 0) return 0;
+
+for (int i=0; i < sizeof(apiIn); i++) {
+    apiIn[i] = 00;
+}
+
+while (*(wchar_t*)apiIn == 0000) {
+if (*(wchar_t*)apiIn != 0000) break;
+}
+
+return apiIn+2;
+}
+
+
 LARGE_INTEGER fq, co, end;
 LPVOID fiberMain = 0;
+int isAPI = 0;
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -5484,13 +5595,17 @@ BOOL WINAPI debug(LPCVOID param) {
 
                             }
                             
-                            writeCon("\033[35mDebug>>\033[0m");
+                            writeCon("\033[35mGlyphDbg>>\033[0m");
 
-                            // memory allocator
+                            char* buff = checkForAPIUsage(isAPI);
+                            if (buff == 0) {  // Normal CLI loop "fallback"
                             allocStdin(AllocatedRegion, offsetHandles + 200, stdin);
-                            char* buff = (char*)readAlloc(AllocatedRegion, offsetHandles + 200);
+                            buff = (char*)readAlloc(AllocatedRegion, offsetHandles + 200);
+                            }
+
                             zero(buff, '\n');
 
+                            // If stdin is sent in do this
                             if (checkForScript(buff) == 1) {
                                 QueryPerformanceCounter(&end);
                                 double elapsedMs = (double)(end.QuadPart - co.QuadPart) * 1000.0 / fq.QuadPart;
@@ -6891,8 +7006,24 @@ BOOL WINAPI debug(LPCVOID param) {
                                             storeLastDump(0, 0, 1, 999);
                                         }
 
+                                        else if (mystrcmp(buff, "!hook") == 0) {
+                                            hookApi(hProcess, "GetProcAddress");
+                                        }
+
                                         else if (mystrcmp(buff, "!tls") == 0) {
-                                            tlsLoaderInternal();
+
+                                            for (int i=0; i < 255; i++) {
+                                            if (thread[i].state == 999) break;
+                                            printf("+++++++++++++++++++++++++++++++++++++\n");
+                                            void* res = DllsWereLoaded(hProcess, thread[i].address, i);
+                                            if (res == 2) break;
+                                            printf("Thread ID: %lu\n", thread[i].address);
+                                            printf("+++++++++++++++++++++++++++++++++++++\n\n");
+                                            }
+                                            // if (tlsLoaderInternal(1) != 0) {
+                                            //     printf("Extentions have been loaded\n");
+                                            // }
+                                            continue;
                                         }
 
                                         else if (mystrcmp(buff, "!sonify") == 0) {
@@ -7218,6 +7349,13 @@ int wmain(int argc, wchar_t* argv[]) {
     if (argc > 2) {
         
         secondParam = argv[2];
+
+        if (argc > 3) {
+            if (wcscmp(argv[3], L"-api") == 0) {
+                printf("API mode set...\n");
+                isAPI = 1;
+            }
+        }
 
         // DLL stuff
         if (wcscmp(argv[1], L"-DLL") == 0) {
