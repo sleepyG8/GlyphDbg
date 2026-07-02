@@ -5430,11 +5430,19 @@ for (int i=0; ; i++) {
 
 }
 
+__declspec(dllexport) unsigned char apiOut[4096];
+int apiDump(void* hProcess, void* base, int size, int Flags) {
+    if (size > 4088) return 3;  // leave room for delim
+    ReadProcessMemory(hProcess, base, &apiOut, size, 0);
+    *(wchar_t*)(apiOut+size) = 0xADDE;  // Set end
+    return 0;
+}
+
 // This buffer is exported and used for the API
 __declspec(dllexport) unsigned char apiIn[1028];
 
 // Check if API usage first
-void* checkForAPIUsage(int isAPI) {
+void* checkForAPIUsage(void* hProcess, int isAPI) {
 
 if (isAPI == 0) return 0;
 
@@ -5443,12 +5451,33 @@ for (int i=0; i < sizeof(apiIn); i++) {
 }
 
 while (*(wchar_t*)apiIn == 0000) {
-if (*(wchar_t*)apiIn != 0000) break;
+if (*(wchar_t*)apiIn == 0xADDE) break;
+Sleep(300);
+}
+
+if (apiIn[2] == '0' && apiIn[2+1] == 'x') {
+
+unsigned char apiCopy[1028];
+strcpy(apiCopy, apiIn+2);
+zero(apiCopy, '\n');
+
+ULONGLONG addr = 0;
+if (sscanf(apiCopy, "%llx", &addr) != 1 || addr == 0) {
+return 0;
+}
+
+apiDump(hProcess, addr, 500, 0);
 }
 
 return apiIn+2;
 }
 
+int doneScanningForRipRel = 0;
+BOOL WINAPI ripRel(LPCVOID param) {
+riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
+doneScanningForRipRel = 1;
+return 0;
+}
 
 LARGE_INTEGER fq, co, end;
 LPVOID fiberMain = 0;
@@ -5531,7 +5560,8 @@ BOOL WINAPI debug(LPCVOID param) {
             int Size = (unsigned char*)codeRegions->codeBounds[0].end - (unsigned char*)codeRegions->codeBounds[0].start;
             findJmp(hProcess, codeRegions->codeBounds[0].start, Size);
 
-            riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
+            // Make startup cleaner with a thread handling rip rel call tracing
+            void* ripRelThread = CreateThread(0, 0, ripRel, 0, 0, 0);
 
             // Getting pointers from .data
             for (int i=0; i < 10; i++) {
@@ -5597,7 +5627,7 @@ BOOL WINAPI debug(LPCVOID param) {
                             
                             writeCon("\033[35mGlyphDbg>>\033[0m");
 
-                            char* buff = checkForAPIUsage(isAPI);
+                            char* buff = checkForAPIUsage(hProcess, isAPI);
                             if (buff == 0) {  // Normal CLI loop "fallback"
                             allocStdin(AllocatedRegion, offsetHandles + 200, stdin);
                             buff = (char*)readAlloc(AllocatedRegion, offsetHandles + 200);
@@ -6918,7 +6948,10 @@ BOOL WINAPI debug(LPCVOID param) {
                                         }
 
                                         else if (mystrcmp(buff, "!rel") == 0) {
-                                            printf("Scanning... Will take time\n");
+                                            if (doneScanningForRipRel == 0) {
+                                                printf("Scanner not finished yet\n");
+                                                continue;
+                                            }
                                             riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 1);
                                         }
 
