@@ -693,14 +693,28 @@ char* zero(char* buff, char* delimiter) {
     }
 }
 
+void* oldHandle = 0;
 void* mystdhandleIN(int num) {
+    
     void* teb = __readgsqword(0x60);
     unsigned char* param = *(unsigned long long**)((unsigned char*)teb + 0x20);
+    
     if (num == 1) { // in
     return *(unsigned long long**)(param + 32);
     }
 
     if (num == 2) { // out
+        return *(unsigned long long**)(param + 40);
+    }
+
+    if (num == 4) { // patch
+        oldHandle = *(unsigned long long**)(param + 40);
+        *(unsigned long long**)(param + 40) = 00000000;
+        return *(unsigned long long**)(param + 40);
+    }
+
+    if (num == 5) {
+        *(unsigned long long**)(param + 40) = oldHandle;
         return *(unsigned long long**)(param + 40);
     }
 }
@@ -2336,10 +2350,17 @@ FreeLibrary(hAdvapi32);
 return TRUE;
 }
 
+typedef struct {
+    wchar_t name[128];
+} LastProcesses;
+LastProcesses lastproc[24];
+
 // Listing all processes
 int wslActive = 1;
-BOOL listProcesses() {
+int listProcesses(int numOfProcs, int silent) {
     
+    int lastProcNum = 0;
+
     HMODULE hNtDll = GetModuleHandle("ntdll.dll");
 
     pNtQuerySystemInformation NtQuerySystemInformation = (pNtQuerySystemInformation)GetProcAddress(hNtDll, "NtQuerySystemInformation");
@@ -2364,13 +2385,39 @@ BOOL listProcesses() {
 
     int procCount = 0;
 
-    while(info) {
+    for (int i=0; ; i++) {
 
+    if (!silent) {
     wprintf(L"\x1b[92m[+]\x1b[0m Image Name: %ls\n", info->ImageName.Buffer ? info->ImageName.Buffer : L"NULL, no image name\n");
-
+    }
     
     //    wslActive = 1;  // set true if wsl is found for :wsl
-    
+    if (numOfProcs != 0 && procCount >= (numOfProcs - 20)) {
+
+        if (lastProcNum <= 20) {
+
+        int skip = 0;
+        for (int p=0; p < 20; p++) {
+            if (lastproc[p].name[0] == 00) break;
+            if (wcscmp(lastproc[p].name, info->ImageName.Buffer) == 0) {
+            skip = 1;
+            break;
+            }
+        }
+
+        if (skip == 0) {
+        wcscpy(lastproc[lastProcNum++].name, info->ImageName.Buffer);
+        }
+
+        }
+    }
+
+    if (silent == 1) {
+    procCount++;
+    if (info->NextEntryOffset == 0) break;
+    info = (SYSTEM_PROCESS_INFORMATION*)((BYTE*)info + info->NextEntryOffset);
+    continue;
+    }
 
     ULONG threadCount = info->NumberOfThreads;
 
@@ -2389,15 +2436,18 @@ BOOL listProcesses() {
     printf("Handle count: %lu\n", info->HandleCount);
    // printf("Memory Usage: %llu\n", info->VirtualSize);
     printf("Process ID: %i\n", (int)info->UniqueProcessId);
+    printf("result: %lu\n", i);
     printf("+++++++++++++++++++++++++++++++++++++++++++\n");
     procCount++;
     if (info->NextEntryOffset == 0) break;
     info = (SYSTEM_PROCESS_INFORMATION*)((BYTE*)info + info->NextEntryOffset); //loop through using next next entry offset
 }
    
+    if (silent == 0) {
     printf("\x1b[92m[+]\x1b[0m # of processes: %i\n", procCount);
+    }
 
-    return TRUE;
+    return procCount;
 }
 
 // Getting CPU count and info
@@ -5472,6 +5522,19 @@ apiDump(hProcess, addr, 500, 0);
 return apiIn+2;
 }
 
+int ControlMotherShip(unsigned char* command, unsigned char* engineName, unsigned char* sessionName) {
+    void* hMod = LoadLibraryA("glyphOverlay.dll");
+    if (!hMod) {
+    printf("Failed to load glyphOverlay.dll, taking you to the repo\n");
+    Sleep(3000);
+    sei.lpFile = L"https://github.com/sleepyG8/GlyphDbg/tree/main/libExamples";
+    ShellExecuteExW(&sei); 
+    return 3;
+    }
+    int (*motherShip)() = GetProcAddress(hMod, "mothership");
+    motherShip(command, engineName, sessionName);
+}
+
 int doneScanningForRipRel = 0;
 BOOL WINAPI ripRel(LPCVOID param) {
 riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
@@ -5742,7 +5805,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                 else if (mystrcmp(buff, "!proc") == 0) {
                                     printf("\x1b[92m[+]\x1b[0m Listing system wide process information:\n");
-                                    listProcesses();
+                                    listProcesses(0, 0);
                                     continue;
                                 }
 
@@ -7059,6 +7122,58 @@ BOOL WINAPI debug(LPCVOID param) {
                                             continue;
                                         }
 
+                                        // Multi-Session handling
+                                        else if (mystrcmp(buff, "!ms start") == 0) {
+                                            printf("Which process to attach to?\n");
+
+                                            unsigned char msBuff[128];
+                                            fgets(&msBuff, 128, stdin);
+                                            zero(msBuff, '\n');                                            
+
+                                            ControlMotherShip("start", "fiberdebug.exe", msBuff);
+                                            printf("MotherShip started\nYou can control sessions with !ms\n");
+                                            continue;
+                                        }
+
+                                        else if (mystrcmp(buff, "!ms") == 0) {
+                                            printf("Which Session? (Enter to List Sessions)\n");
+                                            unsigned char sessionBuff[128];
+                                            fgets(sessionBuff, 128, stdin);
+                                            zero(sessionBuff, '\n');
+
+                                            if (sessionBuff[0] == 00) {
+                                            printf("[!] Active Sessions\n");
+                                            ControlMotherShip("-list", "fiberdebug.exe", NULL);
+                                            continue;
+                                            }
+
+                                            printf("What Command?\n");
+                                            unsigned char cmdBuff[128];
+                                            fgets(cmdBuff, 128, stdin);
+                                            zero(cmdBuff, '\n');
+
+                                            ControlMotherShip(cmdBuff, "fiberdebug.exe", sessionBuff);
+
+                                            printf("\nCommand sent to [%s]\n", sessionBuff);
+                                        }
+
+                                        else if (mystrcmp(buff, "!ms last") == 0) {
+
+                                            int num = listProcesses(0, 1);
+                                            listProcesses(num, 1);
+                                            for (int i=0; i < 20; i++) {
+                                                if (lastproc[i].name[0] == 00) break;
+                                                unsigned char narrow[128];
+                                                wideToChar(lastproc[i].name, &narrow, wideLen(lastproc[i].name));
+                                                ControlMotherShip("start", "fiberdebug.exe", narrow);
+                                                printf("Initialized [%s]\n", narrow);
+
+                                            }
+
+                                        }
+                                        
+                                        // End of Multi-Session handling
+
                                         else if (mystrcmp(buff, "!sonify") == 0) {
                                             unsigned char* musicbuff = malloc((unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start);
                                             ReadProcessMemory(hProcess, codeRegions->codeBounds[0].start, musicbuff, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
@@ -7303,7 +7418,7 @@ int wmain(int argc, wchar_t* argv[]) {
     LPVOID debugFiber = CreateFiber(0, debug, argv[1]);
 
     if (wcscmp(argv[1], L"-l") == 0) {
-        listProcesses();
+        listProcesses(0, 0);
         return 0;
     }
 
