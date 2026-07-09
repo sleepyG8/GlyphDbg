@@ -584,7 +584,7 @@ typedef struct {
     char name[128];
     FARPROC address;
 } Imports;
-__declspec(dllexport) Imports imports[500];
+__declspec(dllexport) Imports imports[1000];
 size_t countImport = 0;
 
 // using cpuid to pull CPU vendor name
@@ -1246,7 +1246,7 @@ BYTE* VAFromRVA(DWORD rva, PIMAGE_NT_HEADERS nt, BYTE* base) {
 }
 
 void addImport(char* funcName, FARPROC addr) {
-    if (countImport >= 499) return 1;   // probably never will max out
+    if (countImport >= 999) return 1;   // probably never will max out
     strncpy(imports[countImport].name, funcName, sizeof(imports[countImport].name) - 1);
     imports[countImport].address = addr;
     countImport++;
@@ -2217,15 +2217,15 @@ BOOL GetPEBFromAnotherProcess(HANDLE hProcess, PROCESS_INFORMATION *thread, DWOR
     }
 
     wprintf(L"\x1b[92m[+]\x1b[0m Command Line: %ls\n", cmd);
-    
+
+    printf("\x1b[92m[+]\x1b[0m LDR Address: 0x%p\n", pbi.Ldr);
+
     size_t bytesread;
     if (!ReadProcessMemory(hProcess, (LPCVOID)pbi.Ldr , &ldrData, sizeof(ldrData), &bytesread)) {
             printf("error getting ldr, retry... %lu - %lu\n", mygetlasterror(), bytesread);
             return FALSE;
     }
     
-    printf("\x1b[92m[+]\x1b[0m LDR Address: 0x%p\n", ldrData);
-
     LIST_ENTRY* head = &ldrData.InLoadOrderModuleList;
     LIST_ENTRY* currentEntry = head->Flink;
 
@@ -4656,7 +4656,7 @@ typedef struct lastDisasm {
     int lastFuncDisasm;
     int size;
 } lastDisasm;
-lastDisasm* lastFunction = NULL;
+lastDisasm lastFunction; // one struct allocation, no malloc
 
 char *breakBuff;
 int breakSet = 0;
@@ -5361,22 +5361,153 @@ int makeMusic(unsigned char* buff, int size) {
     return 0;
 }
 
-typedef struct _THREAD_BASIC_INFORMATION {
-    NTSTATUS ExitStatus;
-    PVOID TebBaseAddress; // the goods
-    CLIENT_ID ClientId;
-    KAFFINITY AffinityMask;
-    KPRIORITY Priority;
-    KPRIORITY BasePriority;
-} _THREAD_BASIC_INFORMATION;
+// Dumping by struct type
+// This following section is responsible for the struct dumping feature
+typedef struct {
+int num;
+} offsetsEntry;
 
-typedef NTSTATUS (NTAPI *NtQueryInformationThread_t)(
-    HANDLE ThreadHandle,
-    THREADINFOCLASS ThreadInformationClass,
-    PVOID ThreadInformation,
-    ULONG ThreadInformationLength,
-    PULONG ReturnLength
-);
+typedef struct {
+    offsetsEntry ent[129];
+} offsets;
+
+char* getStructsFromFile(unsigned char* fileBuff, char* structName, offsets* out) {
+
+    int currentNum = 0;
+    int upUntil = 0;
+
+    for (int i=0; ; i++) {
+        
+    if (upUntil+1 == 0x00) break;
+
+    char line[150];
+    
+    // get each line
+    int j;
+    for (j=0; ; j++) {
+        line[j] = fileBuff[j+upUntil];
+        if (line[j] == 0x0A || line[j] == 0x0D || line[j] == 00) {
+            line[j] = 00;
+            break;
+        }
+
+    }
+
+    if (line[0] == 'E' && line[1] == 'N' && line[2] == 'D') break;
+    
+    //printf("%s\n", &line);
+
+    if (strncmp(&line, "struct", 5) == 0) {
+
+        if (strncmp(line + 7, structName, strlen(structName)) == 0) {
+        for (int p=0; ; p++) {
+            if ((fileBuff[p+upUntil]) == ';') break;
+            if ((fileBuff[p+upUntil]) == '0' && (fileBuff[p+upUntil+1]) == 'x') {
+                
+                if (atoi((fileBuff+p+upUntil+2))) {
+                // printf("num: %lu - up %lu\n", atoi(fileBuff+p+upUntil+2), p);
+                out->ent[currentNum++].num = atoi(fileBuff+p+upUntil+2);
+                }
+
+            }
+        }
+        }
+
+    }
+
+    upUntil += j+2;
+
+
+    }
+}
+
+int readStructs(void* hProcess, void* address, char* name) {
+
+    FILE* f = fopen("test.struct", "rb");
+    if (!f) {
+        printf("Failed to open file\n");
+        return 3;
+    }
+    fseek(f, 0, SEEK_END);
+    int size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    unsigned char* fileBuff = malloc(size);
+    fread(fileBuff, 1, size, f);
+    
+    offsets in;
+    for (int i=0; i < 128; i++) {
+        in.ent[i].num = 00;
+    }
+
+    // printf("%s\n", name);
+    // printf("%lu\n", strlen(name));
+
+    getStructsFromFile(fileBuff, name, &in);
+
+    int total = 0;
+    for (int i=0; ; i++) {
+        if (in.ent[i].num == 00) break;
+        // printf("num: %lu\n", in.ent[i].num);
+        total += in.ent[i].num;
+    }
+
+    int soFar = 0;
+    for (int i=0; i < 128; i++) {
+        if (in.ent[i].num == 00) break;
+        soFar += in.ent[i].num;
+        unsigned char* buffer = malloc(in.ent[i].num);
+        unsigned long res = 0;
+        ReadProcessMemory(hProcess, (unsigned char*)address + soFar, buffer, in.ent[i].num, &res);
+        printf("%lu:\t", i);
+        for (int p=0; p < res; p++) {
+            printf("%02X ", buffer[p]);
+        }
+        printf("\n");
+        free(buffer);
+    }
+
+    free(fileBuff);
+    fclose(f);
+    return 0;
+}
+
+int DumpStruct(void* hProcess, char* buff) {
+
+    if (strncmp(buff, "struct", 6) == 0) {
+
+        for (int i=0; i < 50; i++) {
+
+            if (buff[i] == '0' && buff[i+1] == 'x') {
+                
+                ULONGLONG addr = 0;
+                if (sscanf(buff+i, "%llx", &addr) != 1 || addr == 0) {
+                printf("Error: invalid address '%s'\n", buff);
+                return 1;
+                }
+
+                unsigned char name[128];
+                for (int i=0; i < 128; i++) {
+                    name[i] = 00;
+                }
+
+                for (int p=0; ; p++) {
+                    if (p > 128) break;
+                    if (buff[p+7] == 0x20) {
+                        break;
+                    }
+                    name[p] = buff[p+7];
+                }
+
+                readStructs(hProcess, addr, name);
+                break;
+            }
+
+        }
+    }
+    return 0;
+}
+// End of struct dumping
 
 // Found this struct at 0x17cd. Ive mapped it and will write a paper on it.
 // It is related to tls and dll metadata. If pointer == 00 then no Dlls have
@@ -5384,7 +5515,7 @@ typedef NTSTATUS (NTAPI *NtQueryInformationThread_t)(
 int DllsWereLoaded(void* hProcess, int threadNum, int iteration) {
 
    void* hThread = OpenThread(THREAD_ALL_ACCESS, 0, threadNum);
-   void* (*qit)() = (NtQueryInformationThread_t)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQueryInformationThread");
+   void* (*qit)() = (void*)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQueryInformationThread");
 
    unsigned char tbi[0x30];
    NTSTATUS status = qit(hThread, 0, &tbi, sizeof(tbi), NULL);
@@ -6198,37 +6329,33 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                     else if (mystrcmp(buff, "!disasm") == 0) {
 
-                                        if (!lastFunction) {
-                                            lastFunction = malloc(sizeof(lastFunction));
-                                            lastFunction->lastFuncDisasm = 0;
-                                            lastFunction->size = 0;
+                                        if (!lastFunction.size) {
+                                            lastFunction.lastFuncDisasm = 0;
+                                            lastFunction.size = 0;
                                         }
                                        
                                         for (int i=0; i < funcCount; i++) {
 
-                                            if (lastFunction->lastFuncDisasm != 0) {
+                                            if (lastFunction.lastFuncDisasm != 0) {
                                                 writeCon("Would you like to restore the save point?\n");
                                                 
                                                 allocStdin(AllocatedRegion, offsetHandles + 1400, stdin);
                                                 char* restoreBuff = readAlloc(AllocatedRegion, offsetHandles + 1400);   
-                                                restoreBuff[strcspn(restoreBuff, "\n")] = '\0';
+                                                zero(restoreBuff, '\n');
 
                                                 if (mystrcmp(restoreBuff, "y") == 0|| mystrcmp(restoreBuff, "Y") == 0) {
                                                 writeCon("Restoring save point!\n");
-                                                i = lastFunction->lastFuncDisasm;
-                                                lastFunction->lastFuncDisasm = 0;
-                                                lastFunction->size = 0;
+                                                i = lastFunction.lastFuncDisasm;
+                                                lastFunction.lastFuncDisasm = 0;
+                                                lastFunction.size = 0;
                                                 } else {
-                                                    lastFunction->lastFuncDisasm = 0;
-                                                    lastFunction->size = 0;
-                                                    printf("Restarting the dissassembler\n");
+                                                    lastFunction.lastFuncDisasm = 0;
+                                                    lastFunction.size = 0;
+                                                    writeCon("Restarting the dissassembler\n");
                                                 }
                                             }
 
-                                            //printf("i = %lu\n", i);
                                             printf("<%lu>: Begin: %p\tEnd: %p - Size: %lu\n", functions[i].num, functions[i].begin, functions[i].end, functions[i].size);
-
-                                            //if (functions[i].firstByte != 0x48 || functions[i].size < 100) continue;            // continue if not x64 code and filter out filler
 
                                             readRawAddr(hProcess, functions[i].begin, functions[i].size, i, 0);
                                             
@@ -6238,37 +6365,36 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             char* breakBuffer = readAlloc(AllocatedRegion, offsetHandles + 1000);
                                             
-                                            breakBuffer[strcspn(breakBuffer, "\n")] = '\0';
+                                            zero(breakBuffer, '\n');
 
-                                            if (strcmp(breakBuffer, "-") == 0) {
+                                            if (mystrcmp(breakBuffer, "-") == 0) {
                                                 i -= 3;
-                                            } else if (strcmp(breakBuffer, "q") == 0) {
-                                                lastFunction->lastFuncDisasm = i;
-                                                lastFunction->size = functions[i].size;
+                                            } else if (mystrcmp(breakBuffer, "q") == 0) {
+                                                lastFunction.lastFuncDisasm = i;
+                                                lastFunction.size = functions[i].size;
                                                 writeCon("Created save point!\n");
                                                 break;
-                                            } else if (breakBuffer[0] == 'g') {
-                                                if (isdigit(breakBuffer[2])) {
-                                                    char number[6];
-                                                    for (int j=0; j < mystrlen(breakBuffer) ;j++) {
-                                                        if (j > sizeof(number)) break;
-                                                        if (breakBuffer[2+j] == 0x00) {
-                                                            number[j] = 0x00;
-                                                            break;
-                                                        }
-                                                        number[j] = breakBuffer[2+j];
+                                            } else if (breakBuffer[0] == 'g' && isdigit(breakBuffer[2])) {
+                                                char number[6];
+                                                for (int j=0; j < mystrlen(breakBuffer) ;j++) {
+                                                    if (j > sizeof(number)) break;
+                                                    if (breakBuffer[2+j] == 0x00) {
+                                                        number[j] = 0x00;
+                                                        break;
                                                     }
-
-                                                    int finalNum = atoi(number);
-
-                                                    if (finalNum > funcCount) break;
-
-                                                    printf("Fast Travel to function # %lu\n", finalNum);
-
-                                                    i = finalNum - 1;
-                                                    breakBuffer[0] = 00;
-                                                    continue;
+                                                    number[j] = breakBuffer[2+j];
                                                 }
+
+                                                int finalNum = atoi(number);
+
+                                                if (finalNum > funcCount) break;
+
+                                                printf("Fast Travel to function # %lu\n", finalNum);
+
+                                                i = finalNum - 1;
+                                                breakBuffer[0] = 00;
+                                                continue;
+
                                             }else continue;
                                         
                                         }
@@ -7183,6 +7309,8 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                         else {
 
+                                            DumpStruct(hProcess, buff);
+                                            
                                             if (checkForRva(buff) == 0) continue;
 
                                             ENTRY* res = read(dllMap, buff);    // Check for dll string
