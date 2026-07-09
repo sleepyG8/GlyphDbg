@@ -1,0 +1,91 @@
+struct MYPEB {
+    Reserved1 0x01
+    BeingDebugged 0x01
+    BitField 0x01
+    CrossProcessFlags 0x01
+    Reserved3 0x12
+    Reserved3_1 0x08
+    Ldr 0x08
+    ProcessParameters 0x08
+};
+
+struct PE {
+    e_magic                 0x02
+    e_cblp                  0x02
+    e_cp                    0x02
+    e_crlc                  0x02
+    e_cparhdr               0x02
+    e_minalloc              0x02
+    e_maxalloc              0x02
+    e_ss                    0x02
+    e_sp                    0x02
+    e_csum                  0x02
+    e_ip                    0x02
+    e_cs                    0x02
+    e_lfarlc                0x02
+    e_ovno                  0x02
+    e_res                   0x08
+    e_oemid                 0x02
+    e_oeminfo               0x02
+    e_res2                  0x20
+    e_lfanew                0x04
+
+    PE_Signature            0x04
+
+    FileHeader_Machine              0x02
+    FileHeader_NumberOfSections     0x02
+    FileHeader_TimeDateStamp        0x04
+    FileHeader_PointerToSymbolTable 0x04
+    FileHeader_NumberOfSymbols      0x04
+    FileHeader_SizeOfOptionalHeader 0x02
+    FileHeader_Characteristics      0x02
+
+    OptionalHeader_Magic                    0x02
+    OptionalHeader_MajorLinkerVersion       0x01
+    OptionalHeader_MinorLinkerVersion       0x01
+    OptionalHeader_SizeOfCode               0x04
+    OptionalHeader_SizeOfInitializedData    0x04
+    OptionalHeader_SizeOfUninitializedData  0x04
+    OptionalHeader_AddressOfEntryPoint      0x04
+    OptionalHeader_BaseOfCode               0x04
+    OptionalHeader_ImageBase                0x08
+    OptionalHeader_SectionAlignment         0x04
+    OptionalHeader_FileAlignment            0x04
+    OptionalHeader_MajorOSVersion           0x02
+    OptionalHeader_MinorOSVersion           0x02
+    OptionalHeader_MajorImageVersion        0x02
+    OptionalHeader_MinorImageVersion        0x02
+    OptionalHeader_MajorSubsystemVersion    0x02
+    OptionalHeader_MinorSubsystemVersion    0x02
+    OptionalHeader_Win32VersionValue        0x04
+    OptionalHeader_SizeOfImage              0x04
+    OptionalHeader_SizeOfHeaders            0x04
+    OptionalHeader_CheckSum                 0x04
+    OptionalHeader_Subsystem                0x02
+    OptionalHeader_DllCharacteristics       0x02
+    OptionalHeader_SizeOfStackReserve       0x08
+    OptionalHeader_SizeOfStackCommit        0x08
+    OptionalHeader_SizeOfHeapReserve        0x08
+    OptionalHeader_SizeOfHeapCommit         0x08
+    OptionalHeader_LoaderFlags              0x04
+    OptionalHeader_NumberOfRvaAndSizes      0x04
+
+    DataDirectory_ExportTable               0x08
+    DataDirectory_ImportTable               0x08
+    DataDirectory_ResourceTable             0x08
+    DataDirectory_ExceptionTable            0x08
+    DataDirectory_CertificateTable          0x08
+    DataDirectory_RelocationTable           0x08
+    DataDirectory_Debug                     0x08
+    DataDirectory_Architecture              0x08
+    DataDirectory_GlobalPtr                 0x08
+    DataDirectory_TLS                       0x08
+    DataDirectory_LoadConfig                0x08
+    DataDirectory_BoundImport               0x08
+    DataDirectory_IAT                       0x08
+    DataDirectory_DelayImport               0x08
+    DataDirectory_CLRRuntimeHeader          0x08
+    DataDirectory_Reserved                  0x08
+};
+
+END
