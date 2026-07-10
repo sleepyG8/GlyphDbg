@@ -4672,6 +4672,14 @@ int BREAKENTRY(wchar_t* path) {
 
 DWORD WINAPI hotKeys(void* param) { 
 
+// quality of life
+SYSTEM_POWER_STATUS pw;
+GetSystemPowerStatus(&pw);
+if (pw.BatteryLifePercent < 10 && pw.ACLineStatus != 1) {
+    printf("Umm... you may want to plug in your pc your at %lu\n", pw.BatteryLifePercent);
+}
+//
+
 RegisterHotKey(NULL, 1, MOD_CONTROL | MOD_ALT, 'E');
 
 MSG msg;
@@ -5405,7 +5413,7 @@ char* getStructsFromFile(unsigned char* fileBuff, char* structName, offsets* out
             if ((fileBuff[p+upUntil]) == '0' && (fileBuff[p+upUntil+1]) == 'x') {
                 
                 if (atoi((fileBuff+p+upUntil+2))) {
-                // printf("num: %lu - up %lu\n", atoi(fileBuff+p+upUntil+2), p);
+                //printf("num: %lu - up %lu\n", atoi(fileBuff+p+upUntil+2), p);
                 out->ent[currentNum++].num = atoi(fileBuff+p+upUntil+2);
                 }
 
@@ -5455,7 +5463,7 @@ int readStructs(void* hProcess, void* address, char* name) {
     int soFar = 0;
     for (int i=0; i < 128; i++) {
         if (in.ent[i].num == 00) break;
-        soFar += in.ent[i].num;
+        
         unsigned char* buffer = malloc(in.ent[i].num);
         unsigned long res = 0;
         ReadProcessMemory(hProcess, (unsigned char*)address + soFar, buffer, in.ent[i].num, &res);
@@ -5463,7 +5471,18 @@ int readStructs(void* hProcess, void* address, char* name) {
         for (int p=0; p < res; p++) {
             printf("%02X ", buffer[p]);
         }
+
+        if (in.ent[i].num == 8 && (buffer[5] == 0x7F && buffer[6] == 00)) {
+            unsigned long long outnflipped = 0;
+            for (int z=0; z < 8; z++) {
+                outnflipped = outnflipped << 8 | buffer[z];
+            }
+
+            printf("[0x%p]", _byteswap_uint64(outnflipped));
+        } 
+
         printf("\n");
+        soFar += in.ent[i].num;
         free(buffer);
     }
 
