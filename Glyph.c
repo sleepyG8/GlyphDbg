@@ -3625,6 +3625,8 @@ BOOL printHelp() {
     
     writeCon("!dump     - Dump a raw address (retry if ERROR_ACCESS_DENIED)\n");
 
+    writeCon("!bgrep    - Scan for a pattern you supply\n");
+
     writeCon("!lastdump - Get dump history\n");
 
     writeCon("!disasm   - Disassemble the function boundaries\n");
@@ -3679,6 +3681,8 @@ BOOL printHelp() {
 
     writeCon("!rx       - Disasm(Alt)\n");
 
+    writeCon("!tls      - Dump extended tls info\n");
+
     writeCon("!rift     - Diff snapshots (Provide a .slp file using !save)\n");
 
     writeCon("!stubs    - Dump syscall stubs\n");
@@ -3727,6 +3731,9 @@ BOOL printHelp() {
     writeCon("#kbase      - Get the kernels base address\n");
     writeCon("#kdump      - Dump kernel memory\n");
 
+    writeCon("\n-- Motherships (Multi-Session) --\n");
+    writeCon("!ms start\t -Start a session by procName\n!ms\t\t -Send a Command to another session\n!ms last\t -Connect to last 20 processes\n");
+
     // Terminate
     // modules
     // kernel reads*
@@ -3768,6 +3775,8 @@ BOOL printHelp() {
     writeCon("\n[!][Extras]\n!pebPatch          - patch glyphs peb\n");
 
     writeCon("??                 - Dump a random function\n");
+
+    writeCon("!sonify            - Listen to the code (Ear Warning)\n");
 
     writeCon("==============================\n");
 }
@@ -5562,7 +5571,6 @@ int DllsWereLoaded(void* hProcess, int threadNum, int iteration) {
 
         unsigned long long dlladdr = 0;
         ReadProcessMemory(hProcess, (unsigned char*)DllBaseAddress + 0x10, &dlladdr, 500, 0);
-
         if (!dlladdr) continue;
 
         unsigned char dllBuff[1500];
@@ -5570,6 +5578,19 @@ int DllsWereLoaded(void* hProcess, int threadNum, int iteration) {
 
         dumpPointersRaw(dllBuff, sizeof(dllBuff));
 
+        unsigned long long pvariables = *(unsigned long long**)((unsigned char*)dllBuff + 0x218);
+        if (!pvariables) continue;
+        
+        for (int p=0; ; p++) {
+        unsigned long long pointertostring = 0;
+        ReadProcessMemory(hProcess, pvariables + p*8, &pointertostring, sizeof(unsigned long long), 0);
+        if (!pointertostring) break;
+
+        unsigned char words[256];
+        ReadProcessMemory(hProcess, pointertostring, &words, sizeof(words), 0);
+        printf("%s\n", words);
+
+        }
     }
 
    }
@@ -5691,6 +5712,88 @@ riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegi
 doneScanningForRipRel = 1;
 return 0;
 }
+
+// Getting GUI data and fuzzer //
+// Get a random num 16 bit
+int getrand(int first, int maxNum) {
+    unsigned long long rand = 00;
+    unsigned long long rand2 = 00;
+    int finalNum = 0;
+
+    for (int p=0; ; p++) {
+    _rdrand64_step(&rand);
+    _rdrand64_step(&rand2);
+    finalNum = (rand >> 56) << 8 | (rand2 >> 56);
+    if ((finalNum) <= maxNum && (finalNum) >= first) return finalNum;
+    }
+}
+
+int fuzzz = 0;
+BOOL CALLBACK EnumChild(HWND hwnd, LPARAM lParam) {
+    
+    unsigned short wname[128];
+    GetClassNameW(hwnd, &wname, sizeof(wname));
+
+   //printf("child: %S\n", wname);
+   // SendMessageA(hwnd, WM_SETTEXT, 0, "Hello This Gui has been hijacked");
+
+    if (wcsstr(wname, L"EDIT") != 0 || wcsstr(wname, L"Edit") != 0) {    
+
+    if (fuzzz == 1) {
+
+        int LoopTimes = getrand(1, 10000);
+        unsigned char* fuzzBuff = malloc(LoopTimes);
+
+        printf("Sending %lu Bytes...\n", LoopTimes);
+        for (int i=0; i < LoopTimes; i++) {
+        fuzzBuff[i] = getrand(1, 200);
+        }
+
+        SendMessageA(hwnd, WM_SETTEXT, 0, fuzzBuff);
+        SendMessageA(hwnd, WM_KEYDOWN, VK_RETURN, 0);
+        SendMessageA(hwnd, WM_KEYUP, VK_RETURN, 0);
+        SendMessageA(hwnd, WM_SETTEXT, 0, "");
+        free(fuzzBuff);
+        return 1;
+    
+    }
+
+    int len = SendMessageA(hwnd, WM_GETTEXTLENGTH, 0, 0);
+    char* buff = malloc(len + 1);
+    SendMessageA(hwnd, WM_GETTEXT, len + 1, buff);
+    printf("%s\n", buff);    
+    printf("\nPrinted from %S [hwnd: %p]\n", wname, hwnd);
+    free(buff);
+
+    getchar();
+
+    }
+
+    return 1;
+}
+
+int Apid = 0;
+BOOL CALLBACK EnumProc(HWND hwnd, LPARAM lParam) {
+
+    int pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+
+    if (Apid == pid) {
+    //printf("[+] Window Handle: %p %lu\n\n", hwnd, pid);
+    EnumChildWindows(hwnd, EnumChild, 0);
+    }
+
+    return 1;
+}
+
+int enumWindows(int id) {
+
+    Apid = id;
+    EnumWindows(EnumProc, 0);
+
+    return 0;
+}
+// Done with Gui stuff //
 
 LARGE_INTEGER fq, co, end;
 LPVOID fiberMain = 0;
@@ -7266,6 +7369,20 @@ BOOL WINAPI debug(LPCVOID param) {
                                             // }
                                             continue;
                                         }
+
+                                        else if (mystrcmp(buff, "!windows") == 0) {
+                                            enumWindows(pi.dwProcessId);
+                                        }
+
+                                        else if (mystrcmp(buff, "!fuzz") == 0) {
+                                            fuzzz = 1;
+                                            for (int i=0; i < 50; i++) {
+                                            enumWindows(pi.dwProcessId);
+                                            }
+                                            fuzzz = 0;
+                                            continue;
+                                        }
+                                        
 
                                         // Multi-Session handling
                                         else if (mystrcmp(buff, "!ms start") == 0) {
