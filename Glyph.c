@@ -174,11 +174,11 @@ int KkernelRead(void* address, int Size) {
 typedef struct ENTRY {
     UINT64 address;
     int offset;
-    unsigned char key[50];
+    unsigned char key[64];
 } ENTRY;
 
 typedef struct HashMapEntry {
-    ENTRY entry[100];
+    ENTRY entry[1028];
     int currentEntry;
 } HashMapEntry;
 
@@ -203,7 +203,7 @@ int insert(HASHMAP* map, unsigned char* key, int offset, UINT64 addr) {
     int current = map->entry[res].currentEntry;
     map->entry[res].currentEntry++;
     
-    strcpy(map->entry[res].entry[current].key, key);
+    strncpy(map->entry[res].entry[current].key, key, 64);
     map->entry[res].entry[current].offset = offset;
     map->entry[res].entry[current].address = addr;
     return 0;
@@ -315,6 +315,8 @@ struct myparams {
 WCHAR *fullPath;
 
 }myparams;
+
+int isAPI = 0;
 
 typedef NTSTATUS (NTAPI* pNtTerminateProcess)(HANDLE, NTSTATUS);
 
@@ -1090,6 +1092,16 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
 
             printf("0x%"PRIx64":\t%s\t%s\n", insn[i].address, insn[i].mnemonic, insn[i].op_str, insn[i].bytes);
 
+            // GUI TRACKER //
+            if (isAPI == 1) {
+            for (int p=0; p < insn[i].size; i++) {
+                unsigned char bytes[128];
+                snprintf(&bytes, 128, "0x%"PRIx64":\t%s\t%s\r\n", insn[i].address, insn[i].mnemonic, insn[i].op_str);   
+                sendOutputToGui(bytes);                        
+            }  
+            }
+            //
+
             if (i < 5) {   // 80 is max opstr size for saving, I dont want 500mb files lol this keeps it around 30 - 100 mb
             functions[funcNum].op[i].size = mystrlen(insn[i].op_str);
             strcpy(functions[funcNum].op[i].asm, insn[i].op_str);
@@ -1306,9 +1318,7 @@ int breakpointSet = 0; // Global
 // Reading Imported Apis
 int getRemoteImports(HANDLE hProcess, char* breakFunction, BOOL entry, void* remoteDLL) {
 
-//getting base address
 BYTE* baseAddress;
-
 if (remoteDLL) {
 baseAddress = remoteDLL;
 } else {
@@ -1521,7 +1531,6 @@ for (int i=0; i < 10; i++) {
 for (int i=0; i < countImport; i++) {
     insert(map, imports[i].name, 0, imports[i].address);
 }
-
 
 return 0;
 }
@@ -2658,6 +2667,14 @@ if (!ReadProcessMemory(hProcess, (BYTE*)peb.Base + sectionOffset + (i * sizeof(I
 
     }
 
+    // GUI TRACKER
+    if (isAPI == 1) {
+        unsigned char tmphook[256];
+        snprintf(&tmphook, 128, "%s - 0x%p\r\n", section.Name, (unsigned char*)address + section.VirtualAddress);
+        sendOutputToGui(tmphook);
+    }
+    //
+
     char buffer[1000];
     if (!ReadProcessMemory(hProcess, (BYTE*)peb.Base + section.VirtualAddress, &buffer, sizeof(buffer), NULL)) {
         printf("Error reading data %lu\n", mygetlasterror());
@@ -3688,6 +3705,10 @@ BOOL printHelp() {
     writeCon("!stubs    - Dump syscall stubs\n");
 
     writeCon("!diffDisk - Diff ntdll in mem with disk\n");
+
+    writeCon("\n-- GUI Related Things --\n");
+    writeCon("!fuzz     - A GUI fuzzer\n");
+    writeCon("!windows  - Print text from connected process\n");
     
     writeCon("\n-- Process & System Info --\n");
     
@@ -3773,6 +3794,8 @@ BOOL printHelp() {
     writeCon("Commandline Accepts: Imports, exports, dlls, addresses\n");
 
     writeCon("\n[!][Extras]\n!pebPatch          - patch glyphs peb\n");
+
+    writeCon("!duo               - Connect to windbg\n");
 
     writeCon("??                 - Dump a random function\n");
 
@@ -4323,7 +4346,15 @@ int stackWalk(void* hProcess, unsigned char* rsp) {
         } 
         }
         if (sectionFound == 0) {
-            printf("[%lu] 0x%p\n", i, *(void**)((unsigned char*)buff + i));      
+            printf("[%lu] 0x%p\n", i, *(void**)((unsigned char*)buff + i));  
+        
+        // GUI TRACKER
+        if (isAPI == 1) {
+        unsigned char stackGuiBuff[32];
+        snprintf(&stackGuiBuff, 32, "[%lu]\t0x%p\r\n", i, *(void**)((unsigned char*)buff + i));
+        sendOutputToGui(stackGuiBuff);
+        }
+        //
         }
     }
 
@@ -5477,6 +5508,7 @@ int readStructs(void* hProcess, void* address, char* name) {
         unsigned long res = 0;
         ReadProcessMemory(hProcess, (unsigned char*)address + soFar, buffer, in.ent[i].num, &res);
         printf("%lu:\t", i);
+
         for (int p=0; p < res; p++) {
             printf("%02X ", buffer[p]);
         }
@@ -5489,6 +5521,18 @@ int readStructs(void* hProcess, void* address, char* name) {
 
             printf("[0x%p]", _byteswap_uint64(outnflipped));
         } 
+
+        if (mystrcmp(name, "DWORD") == 0 && in.ent[i].num == 4) {
+        printf("[%lu]", _byteswap_ulong(*(unsigned long*)buffer));
+        }
+
+        if (mystrcmp(name, "wchar") == 0 && in.ent[i].num == 2) {
+        if (myisprint(buffer[0])) {
+        printf("[%c] ", buffer[0]);
+        } else { 
+        printf("%04X ", (*(wchar_t*)buffer));
+        }
+        }
 
         printf("\n");
         soFar += in.ent[i].num;
@@ -5729,13 +5773,16 @@ int getrand(int first, int maxNum) {
 }
 
 int fuzzz = 0;
+int sendToGui = 0;
+int guiEditNum = 0;
+unsigned char blockStream[4096];
 BOOL CALLBACK EnumChild(HWND hwnd, LPARAM lParam) {
     
     unsigned short wname[128];
     GetClassNameW(hwnd, &wname, sizeof(wname));
-
-   //printf("child: %S\n", wname);
-   // SendMessageA(hwnd, WM_SETTEXT, 0, "Hello This Gui has been hijacked");
+    //printf("child: %S\n", wname);
+   
+    // SendMessageA(hwnd, WM_SETTEXT, 0, "Hello This Gui has been hijacked");
 
     if (wcsstr(wname, L"EDIT") != 0 || wcsstr(wname, L"Edit") != 0) {    
 
@@ -5758,6 +5805,20 @@ BOOL CALLBACK EnumChild(HWND hwnd, LPARAM lParam) {
     
     }
 
+    if (sendToGui == 1) {
+        if (guiEditNum != 0) {
+        SendMessageA(hwnd, EM_REPLACESEL, 1, blockStream);
+        for (int i=0; i < sizeof(blockStream); i++) {
+            blockStream[i] = 00;
+        }
+        guiEditNum = 0;
+        } else {
+        guiEditNum++;
+        }
+
+        return 1;
+    }
+
     int len = SendMessageA(hwnd, WM_GETTEXTLENGTH, 0, 0);
     char* buff = malloc(len + 1);
     SendMessageA(hwnd, WM_GETTEXT, len + 1, buff);
@@ -5765,20 +5826,17 @@ BOOL CALLBACK EnumChild(HWND hwnd, LPARAM lParam) {
     printf("\nPrinted from %S [hwnd: %p]\n", wname, hwnd);
     free(buff);
 
-    getchar();
-
     }
 
     return 1;
 }
 
-int Apid = 0;
-BOOL CALLBACK EnumProc(HWND hwnd, LPARAM lParam) {
+BOOL CALLBACK EnumProc(HWND hwnd, int Inid) {
 
     int pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
 
-    if (Apid == pid) {
+    if (Inid == pid) {
     //printf("[+] Window Handle: %p %lu\n\n", hwnd, pid);
     EnumChildWindows(hwnd, EnumChild, 0);
     }
@@ -5788,16 +5846,51 @@ BOOL CALLBACK EnumProc(HWND hwnd, LPARAM lParam) {
 
 int enumWindows(int id) {
 
-    Apid = id;
-    EnumWindows(EnumProc, 0);
+    EnumWindows(EnumProc, id);
 
     return 0;
 }
+
+// Sending data to the glyph GUI
+int firstGUIsearch = 0;
+int sendOutputToGui(char* data) {
+
+    // Only Search on first Iteration
+    int gpid = 0; // GUI PID
+    if (firstGUIsearch == 0) {
+    gpid = GetProc(L"glyphGui.exe", 0);
+    }
+    firstGUIsearch = 1; // set flag to skip gui search
+    if (gpid == 0) return 3;
+
+    for (int i=0; i < 128; i++) {
+        if (data[i] == 00) break;
+        blockStream[i] = data[i];
+    }
+
+    sendToGui = 1;
+    enumWindows(gpid);
+    sendToGui = 0;
+}
+
 // Done with Gui stuff //
+
+int DynamicDuo() {
+    void* winMod = LoadLibraryA("GlyphAndWin.dll");
+    if (!winMod) return 1;
+    int (*send)() = GetProcAddress(winMod, "GlyphAndWin");
+    int res = send();
+    if (!res) {
+        printf("Make sure windbg is started and attached\n");
+        FreeLibrary(winMod);
+        return 1;
+    }
+    FreeLibrary(winMod);
+    return 0;
+}
 
 LARGE_INTEGER fq, co, end;
 LPVOID fiberMain = 0;
-int isAPI = 0;
 BOOL WINAPI debug(LPCVOID param) {
 
     STARTUPINFO si = { sizeof(si) };
@@ -5943,6 +6036,9 @@ BOOL WINAPI debug(LPCVOID param) {
                             
                             writeCon("\033[35mGlyphDbg>>\033[0m");
 
+                            // isAPI is a flag for both api usage and for the GUI
+                            // dont worry, at the cost of an extra call, the gui api
+                            // will gracefully return 3 if the GUI is not running.
                             char* buff = checkForAPIUsage(hProcess, isAPI);
                             if (buff == 0) {  // Normal CLI loop "fallback"
                             allocStdin(AllocatedRegion, offsetHandles + 200, stdin);
@@ -5951,7 +6047,8 @@ BOOL WINAPI debug(LPCVOID param) {
 
                             zero(buff, '\n');
 
-                            // If stdin is sent in do this
+                            // If stdin is sent in do this. This is for overhauling 
+                            // the cmdline buffer with the piped in data.
                             if (checkForScript(buff) == 1) {
                                 QueryPerformanceCounter(&end);
                                 double elapsedMs = (double)(end.QuadPart - co.QuadPart) * 1000.0 / fq.QuadPart;
@@ -6241,8 +6338,18 @@ BOOL WINAPI debug(LPCVOID param) {
                                         printf("Imports:\n");
                                         for (int i=0; i < countImport; i++) {
                                             printf("%s - %llX\n", imports[i].name, imports[i].address);
-                                        }
-                                        writeCon("END\n");
+
+                                            // GUI TRACKER
+                                            if (isAPI == 1) {
+                                            unsigned char tmpImp[256];
+                                            snprintf(&tmpImp, 128, "%s\r\n", imports[i].name);
+                                            sendOutputToGui(tmpImp);
+                                            }
+                                            //
+                                            }
+                                            
+                                            printf("Import Count: %lu\n", countImport);
+
                                         continue;
                                     }
                                     // get signature of the file
@@ -6424,6 +6531,14 @@ BOOL WINAPI debug(LPCVOID param) {
                                         printf("\033[31m[!]\033[0m [Hook detected! at ");
                                         printf("%s ", hooked[i].name);
                                         printf("Function Address: 0x%p]\n", hooked[i].address);
+
+                                        // GUI TRACKER
+                                        if (isAPI == 1) {
+                                            unsigned char tmphook[256];
+                                            snprintf(&tmphook, 128, "%s\r\n", hooked[i].name);
+                                            sendOutputToGui(tmphook);
+                                        }
+                                        //
                                         }
                                         continue;
                                     }
@@ -7264,6 +7379,26 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 continue;
                                             }
                                             riprelcalls(hProcess, codeRegions->codeBounds[0].start, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 1);
+
+                                            // GUI TRACKER                                            
+                                            if (isAPI == 1) {
+                                            for (int d=0; ; d++) {
+                                            if (exportData[d].timesCalled == 0 || d >= 1000) break;
+
+                                            unsigned char nbuff[258];
+                                            snprintf(&nbuff, 128, "%s - %lu\r\n", exportData[d].name, exportData[d].timesCalled);
+                                            sendOutputToGui(nbuff);                                      
+                                   
+                                            for (int a=0; ; a++) { // Printing addr to gui
+                                                if (!(exportData[d].addr[a].address)) break;
+                                                unsigned char gaddress[32];
+                                                snprintf(&gaddress, 32, "0x%p\r\n", exportData[d].addr[a].address);
+                                                sendOutputToGui(gaddress);
+                                            }
+                                            //
+
+                                            }
+                                            }
                                         }
 
                                         else if (strncmp(buff, "!bgrep", 6) == 0) {
@@ -7374,15 +7509,27 @@ BOOL WINAPI debug(LPCVOID param) {
                                             enumWindows(pi.dwProcessId);
                                         }
 
-                                        else if (mystrcmp(buff, "!fuzz") == 0) {
+                                        else if (strncmp(buff, "!fuzz", 5) == 0) {
+                                            int num = atoi(buff + 6);
+                                            if (!num) {
+                                                printf("Usage: !fuzz <Times to fuzz>\n");
+                                                continue;
+                                            }
                                             fuzzz = 1;
-                                            for (int i=0; i < 50; i++) {
+                                            for (int i=0; i < num; i++) {
                                             enumWindows(pi.dwProcessId);
                                             }
                                             fuzzz = 0;
+                                            for (int i=0; i < 100; i++) {
+                                                buff[i] == 00;
+                                            }
                                             continue;
                                         }
                                         
+                                        // DBG GUI STREAM
+                                        else if (mystrcmp(buff, "!stream") == 0) {
+                                            sendOutputToGui("testing... testing... 123...\r\n");                                
+                                        }
 
                                         // Multi-Session handling
                                         else if (mystrcmp(buff, "!ms start") == 0) {
@@ -7441,6 +7588,10 @@ BOOL WINAPI debug(LPCVOID param) {
                                             ReadProcessMemory(hProcess, codeRegions->codeBounds[0].start, musicbuff, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start, 0);
                                             makeMusic(musicbuff, (unsigned char*)codeRegions->codeBounds[0].end - codeRegions->codeBounds[0].start);
                                             free(musicbuff);
+                                        }
+
+                                        else if (mystrcmp(buff, "!duo") == 0) {
+                                            DynamicDuo();
                                         }
 
                                         else {
