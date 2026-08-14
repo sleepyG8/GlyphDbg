@@ -629,16 +629,18 @@ int getCPUVendor() {
     }
 
 } 
+
+// Optamized code written in my assembler
+#pragma section(".jit", read, execute)
+__declspec(align(16))
+__declspec(allocate(".jit"))
+// assembly optamized strcmp
+unsigned char oStrCmp[] = {0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x48, 0x0F, 0xB6, 0x19, 0x48, 0x0F, 0xB6, 0x32, 0x48, 0x39, 0xDE, 0x0F, 0x85, 0x3C, 0x00, 0x00, 0x00, 0x48, 0x81, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x84, 0x27, 0x00, 0x00, 0x00, 0x48, 0x81, 0xFB, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC1, 0x01, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC0, 0x01, 0x00, 0x00, 0x00, 0xE9, 0xBB, 0xFF, 0xFF, 0xFF, 0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, 0xC3, 0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00, 0xC3, 0xC3 };
+
 // Helpers
 int mystrcmp(char* one, char* two) {
-
-    for (int i=0; i < 256; i++) {
-        
-        if (one[i] != two[i]) return 1;
-        if (one[i] == '\0' || two[i] == '\0') return 0;
-
-    }
-    return 0;
+    int (*cmp)() = oStrCmp;
+    return cmp(one, two);
 }
 
 int mystrstr(char* buff, char* string, int size) {
@@ -4173,15 +4175,16 @@ int loadCmdPack(char* option, int getHistory, int startUp) {
     return 1;
 }
 
-int assembler(char* pathToFile) {
-    typedef void*(__stdcall *assemble)(char*);
+int assembler(unsigned char* buff, int size) {
+    typedef void*(__stdcall *assemble)(unsigned char*, int, char*);
     void* hMod = LoadLibraryA("avengers.dll");
     if (!hMod) {
         writeCon("Make sure avengers.dll is in current directory...\n");
         return 0;
     }
-    assemble asm = (assemble*)GetProcAddress(hMod, "assemble");
-    asm(pathToFile);
+
+    assemble asm = (assemble*)GetProcAddress(hMod, "assembler");
+    asm(buff, size,  "-bytes");
     FreeLibrary(hMod);
     return 0;
 }
@@ -4236,7 +4239,23 @@ int Editor(void* hProcess) {
     }
 
     if (res == 3) {
-        assembler("cmdPackEdit.c"); // file extention doesnt matter
+    
+    FILE* f = fopen("cmdPackEdit.c", "rb");
+    if (!f) {
+        printf("cmdPackEdit.c does not exist\n");
+        return 3;
+    }
+
+    fseek(f, 0, SEEK_END);
+    int size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    unsigned char* buff = malloc(size);
+    fread(buff, size, 1, f);
+        
+    assembler(buff, size); // file extention doesnt matter
+
+    free(buff);
     }
 
     void* newMod = LoadLibrary("cmdPack.dll");  // Local dll stays the same
@@ -4246,6 +4265,155 @@ int Editor(void* hProcess) {
 
     return 0;
 
+}
+
+int byte2char(unsigned char byte, unsigned char* outbuff) {
+    
+    unsigned char buff = (byte >> 4) & 0xF;
+    unsigned char buff2 = byte & 0xF;
+
+    if (buff < 10) {
+        buff = '0' + buff;
+    } else {
+        buff = buff + ('A' - 10);
+    }
+
+    if (buff2 < 10) {
+        buff2 = '0' + buff2;
+    } else {
+        buff2 = buff2 + ('A' - 10);
+    }
+
+    outbuff[0] = buff;
+    outbuff[1] = buff2;
+    outbuff[2] = 0x20;  
+
+    return 0;
+}
+
+unsigned long long charToAddress(char* buff) {
+
+    int spaceCount = 0;
+    unsigned long long addr = 0;
+    for (int i=0; i < 23; i+=2) {
+
+        if (buff[i] == 0x20) {
+            i--;
+            spaceCount++;
+            continue;
+        }
+
+        if (buff[i] >= '0' && buff[i] <= '9') {
+            buff[i] = buff[i] - '0';
+        } else if (buff[i] >= 'A' && buff[i] <= 'F') {
+            buff[i] = buff[i] - 'A' + 10;
+        } else {
+            buff[i] = buff[i] - 'a' + 10;
+        }
+
+        if (buff[i+1] >= '0' && buff[i+1] <= '9') {
+            buff[i+1] = buff[i+1] - '0';
+        } else if (buff[i+1] >= 'A' && buff[i+1] <= 'F') {
+            buff[i+1] = buff[i+1] - 'A' + 10;
+        } else {
+            buff[i+1] = buff[i+1] - 'a' + 10;
+        }
+
+        unsigned char byte = (buff[i] << 4 | buff[i+1]);
+        addr = (addr << 8) | byte;
+
+    }
+
+    if (spaceCount != 7) return 0;
+
+    return addr;
+}
+
+int Patcher(void* hProcess, void* address, int size) {
+
+    void* hMod = LoadLibrary("Edit.dll");
+    if (!hMod) {
+        printf("Place Edit.dll and cmdPackEdit.c into the current directory\n");
+        return 2;
+    }
+
+    typedef int(__stdcall *Editor)(void);
+
+    Editor edit = (Editor)GetProcAddress(hMod, "Editor");
+    if (!edit) return 0;
+
+    FILE* f = fopen("cmdPackEdit.c", "wb");
+    if (!f) return 3;
+
+    unsigned char* buff = malloc(size);
+
+    if (!ReadProcessMemory(hProcess, address, buff, size, 0)) return 4;
+
+    for (int j=0; j < size; j++) {
+    unsigned char tmp[3];
+    byte2char(buff[j], &tmp);
+    int wres = fwrite(tmp, 1, sizeof(tmp), f);
+    if (wres == 0) return 5;
+    }
+
+    fclose(f);
+    
+    int res = 0;
+    res = edit();
+    if (!res) return 0;
+
+    FILE* o = fopen("cmdPackEdit.c", "rb");
+    if (!o) return 3;
+
+    fseek(o, 0, SEEK_END);
+    int sizeoffile = ftell(o);
+    fseek(o, 0, SEEK_SET);
+    
+    unsigned char* readData = malloc(sizeoffile);
+    fread(readData, sizeoffile, 1, o);
+
+    unsigned char* writeData = malloc(sizeoffile);
+    int writePlace = 0;
+    for (int i=0; i < sizeoffile; i+=23) {
+
+    unsigned char tmp[25];
+    int j;
+    for (j = 0; j < 23; j++) {
+        tmp[j] = readData[j+i];
+    }
+
+    tmp[j] = 00;
+
+    i++; // skip 1 0x20
+
+    unsigned long long addr = charToAddress(tmp);
+
+    *(unsigned long long**)(writeData + writePlace) = _byteswap_uint64(addr);
+    // printf("%p", *(unsigned long long**)(writeData + writePlace));
+    writePlace += 8;
+
+    }
+
+    printf("\n");
+
+    int writ = 0;
+    if (!WriteProcessMemory(hProcess, (unsigned char*)address, writeData, writePlace, &writ)) {
+        printf("Failed to write bytes back... %lu\n", GetLastError());
+        return 6;
+    }
+
+    for (int i=0; i < writePlace; i++) {
+        printf("%02X ", writeData[i]);
+    }
+    printf("\n");
+
+
+    printf("Patched %lu bytes at [%p]\n", writ, address);
+
+    free(writeData);
+    free(buff);
+    free(readData);
+    return 0;
 }
 
 int procCheck(wchar_t* procName, long procId) {
@@ -5363,44 +5531,6 @@ int checkForScript(char* buff) {
     return 0;
 }
 
-unsigned long long charToAddress(char* buff) {
-
-    int spaceCount = 0;
-    unsigned long long addr = 0;
-    for (int i=0; i < 23; i+=2) {
-
-        if (buff[i] == 0x20) {
-            i--;
-            spaceCount++;
-            continue;
-        }
-
-        if (buff[i] >= '0' && buff[i] <= '9') {
-            buff[i] = buff[i] - '0';
-        } else if (buff[i] >= 'A' && buff[i] <= 'F') {
-            buff[i] = buff[i] - 'A' + 10;
-        } else {
-            buff[i] = buff[i] - 'a' + 10;
-        }
-
-        if (buff[i+1] >= '0' && buff[i+1] <= '9') {
-            buff[i+1] = buff[i+1] - '0';
-        } else if (buff[i+1] >= 'A' && buff[i+1] <= 'F') {
-            buff[i+1] = buff[i+1] - 'A' + 10;
-        } else {
-            buff[i+1] = buff[i+1] - 'a' + 10;
-        }
-
-        unsigned char byte = (buff[i] << 4 | buff[i+1]);
-        addr = (addr << 8) | byte;
-
-    }
-
-    if (spaceCount != 7) return 0;
-
-    return addr;
-}
-
 int makeMusic(unsigned char* buff, int size) {
     void* hMod = LoadLibraryA("makeWavGlyph.dll");
     if (!hMod) return 0;
@@ -5853,14 +5983,17 @@ int enumWindows(int id) {
 
 // Sending data to the glyph GUI
 int firstGUIsearch = 0;
+int gpid = 0; // GUI PID
 int sendOutputToGui(char* data) {
 
     // Only Search on first Iteration
-    int gpid = 0; // GUI PID
     if (firstGUIsearch == 0) {
+    printf("Waiting for GUI...\n");
+    Sleep(1000);
     gpid = GetProc(L"glyphGui.exe", 0);
     }
     firstGUIsearch = 1; // set flag to skip gui search
+
     if (gpid == 0) return 3;
 
     for (int i=0; i < 128; i++) {
@@ -7552,7 +7685,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             if (sessionBuff[0] == 00) {
                                             printf("[!] Active Sessions\n");
-                                            ControlMotherShip("-list", "fiberdebug.exe", NULL);
+                                            ControlMotherShip("-list", "Glyph.exe", NULL);
                                             continue;
                                             }
 
@@ -7561,7 +7694,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             fgets(cmdBuff, 128, stdin);
                                             zero(cmdBuff, '\n');
 
-                                            ControlMotherShip(cmdBuff, "fiberdebug.exe", sessionBuff);
+                                            ControlMotherShip(cmdBuff, "Glyph.exe", sessionBuff);
 
                                             printf("\nCommand sent to [%s]\n", sessionBuff);
                                         }
@@ -7592,6 +7725,47 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                         else if (mystrcmp(buff, "!duo") == 0) {
                                             DynamicDuo();
+                                        }
+
+                                        else if (strncmp(buff, "!patch", 6) == 0) {
+
+                                            // cancel on no address
+                                            if (buff[8] == 00) {
+                                            printf("Usage: !patch 0x<address>\n");                                         
+                                            continue;
+                                            }
+
+                                            unsigned char addrBuff[32];
+                                            unsigned long long addr = 0;
+                                            for (int i=0; i < 16; i+=2) {
+                                                addrBuff[i] = buff[9+i];
+
+                                                unsigned int nib = buff[9+i];
+                                                unsigned int nib2  = buff[9+i+1];
+
+                                                if (nib >= '0' && nib <= '9') {
+                                                    nib = nib - '0';
+                                                } else if (nib >= 'A' && nib <= 'F') {
+                                                    nib = nib - 'A' + 10;
+                                                } else {
+                                                    nib = nib - 'a' + 10;
+                                                }
+
+                                                if (nib2 >= '0' && nib2 <= '9') {
+                                                    nib2 = nib2 - '0';
+                                                } else if (nib2 >= 'A' && nib2 <= 'F') {
+                                                    nib2 = nib2 - 'A' + 10;
+                                                } else {
+                                                    nib2 = nib2 - 'a' + 10;
+                                                }
+
+                                                unsigned char byte = (nib << 4 | nib2);
+                                                addr = (addr << 8) | byte;
+                                                
+                                            }
+
+                                            if (!addr) continue;                                            
+                                            Patcher(hProcess, addr, 128);
                                         }
 
                                         else {
