@@ -633,12 +633,31 @@ int getCPUVendor() {
 // Optamized code written in my assembler
 #pragma section(".jit", read, execute)
 __declspec(align(16))
-__declspec(allocate(".jit"))
 // assembly optamized strcmp
-unsigned char oStrCmp[] = {0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x48, 0x0F, 0xB6, 0x19, 0x48, 0x0F, 0xB6, 0x32, 0x48, 0x39, 0xDE, 0x0F, 0x85, 0x3C, 0x00, 0x00, 0x00, 0x48, 0x81, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x84, 0x27, 0x00, 0x00, 0x00, 0x48, 0x81, 0xFB, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC1, 0x01, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC0, 0x01, 0x00, 0x00, 0x00, 0xE9, 0xBB, 0xFF, 0xFF, 0xFF, 0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, 0xC3, 0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00, 0xC3, 0xC3 };
+__declspec(allocate(".jit")) unsigned char oStrCmp[] = {0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x48, 0x0F, 0xB6, 0x19, 0x48, 0x0F, 0xB6, 0x32, 0x48, 0x39, 0xDE, 0x0F, 0x85, 0x3C, 0x00, 0x00, 0x00, 0x48, 0x81, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x84, 0x27, 0x00, 0x00, 0x00, 0x48, 0x81, 0xFB, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC1, 0x01, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC0, 0x01, 0x00, 0x00, 0x00, 0xE9, 0xBB, 0xFF, 0xFF, 0xFF, 0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, 0xC3, 0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00, 0xC3, 0xC3 };
+// SIMD 16 bit cmp
+__declspec(allocate(".jit")) unsigned char strcmp16[] = {0x48, 0xC7, 0xC3, 0x00, 0x00, 0x00, 0x00, 0xF3, 0x0F, 0x6F, 0x01, 0xF3, 0x0F, 0x6F, 0x0A, 0x66, 0x0F, 0xC2, 0xC1, 0x00, 0x66, 0x0F, 0x50, 0xC0, 0x48, 0x81, 0xC1, 0x10, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC2, 0x10, 0x00, 0x00, 0x00, 0x48, 0x81, 0xC3, 0x10, 0x00, 0x00, 0x00, 0x4C, 0x39, 0xC3, 0x0F, 0x85, 0xD1, 0xFF, 0xFF, 0xFF, 0xC3, 0x48, 0x89, 0xC0, 0x00 };
 
 // Helpers
+
+int mystrlen(char* buff) {
+    for (int i=0; ;i++) {
+    if ((unsigned char)buff[i] == 0x00) return i;
+    }
+}
+
+int cpyNum = 0;
 int mystrcmp(char* one, char* two) {
+
+    // SIMD 16 bytes
+    if (mystrlen(one) % 16 == 0 && mystrlen(two) % 16 == 0 && mystrlen(one) > 16 && mystrlen(two) > 16 ) {
+    unsigned long long (*st)() = strcmp16;
+    int res = st(one, two, mystrlen(one));
+    if (res == 3) return 0;
+    return 1;
+    }
+
+    // scalar
     int (*cmp)() = oStrCmp;
     return cmp(one, two);
 }
@@ -660,12 +679,6 @@ int mystrstr(char* buff, char* string, int size) {
         }
     }
     return 0;
-}
-
-int mystrlen(char* buff) {
-    for (int i=0; ;i++) {
-    if ((unsigned char)buff[i] == 0x00) return i;
-    }
 }
 
 int myisAlpha(unsigned char byte) {
@@ -4329,6 +4342,7 @@ unsigned long long charToAddress(char* buff) {
     return addr;
 }
 
+// gui patcher
 int Patcher(void* hProcess, void* address, int size) {
 
     void* hMod = LoadLibrary("Edit.dll");
@@ -4398,7 +4412,7 @@ int Patcher(void* hProcess, void* address, int size) {
 
     int writ = 0;
     if (!WriteProcessMemory(hProcess, (unsigned char*)address, writeData, writePlace, &writ)) {
-        printf("Failed to write bytes back... %lu\n", GetLastError());
+        printf("Failed to write %lu bytes back... %lu\n", writ, GetLastError());
         return 6;
     }
 
@@ -5297,7 +5311,7 @@ int findLoadersGuts(void* hProcess, void* ntbase, int size) {
 }
 
 // find and compute rip relative calls
-int riprelcalls(void* hProcess, void* base, int size, int show) {
+int __fastcall riprelcalls(void* hProcess, void* base, int size, int show) {
 
     int q;
     for (q=0; ; q++) {
@@ -5992,6 +6006,7 @@ int sendOutputToGui(char* data) {
     Sleep(1000);
     gpid = GetProc(L"glyphGui.exe", 0);
     }
+    
     firstGUIsearch = 1; // set flag to skip gui search
 
     if (gpid == 0) return 3;
@@ -6019,6 +6034,110 @@ int DynamicDuo() {
         return 1;
     }
     FreeLibrary(winMod);
+    return 0;
+}
+
+int oneeightfifty(void* hProcess, int tid) {
+
+    void* hThread = OpenThread(THREAD_ALL_ACCESS, 1, tid);    
+
+    void* (*qit)() = (void*)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQueryInformationThread");
+    unsigned char tbi[0x30];
+    NTSTATUS status = qit(hThread, 0, &tbi, sizeof(tbi), NULL);
+    if (!NT_SUCCESS(status)) return 3;
+
+    unsigned long long teb = *(unsigned long long**)((unsigned char*)tbi + 8);
+
+    unsigned long long dest = (unsigned char*)teb + 0x1850;
+    printf("Address: %p\n", dest);
+
+    unsigned char derefDest[8];
+    int res = 0;
+    ReadProcessMemory(hProcess, dest, &derefDest, 8, &res);
+
+    printf("1850: %p\n", *(unsigned long long**)(derefDest + 0));
+
+    unsigned char ou[24];
+    ReadProcessMemory(hProcess, *(unsigned long long**)(derefDest + 0), &ou, sizeof(ou), 0);
+
+    ou[7] = 00;
+    ou[15] = 00;
+
+    for (int i=0; i < 24; i++) {
+        printf("%02X ", ou[i]);
+    }
+    printf("\n");
+    
+    printf("\nFlink: 0x%p\n", *(unsigned long long**)ou);
+    printf("Blink: 0x%p\n", *(unsigned long long**)(ou+8));
+
+    if (*(unsigned long long**)ou == 0) return 3;
+
+    unsigned char bytes[128]; 
+    ReadProcessMemory(hProcess, *(unsigned long long**)ou, &bytes, sizeof(bytes), 0);
+
+    printf("Flag 1: %lu\n", *(DWORD*)(bytes + 0x0C));
+    printf("Flag 2: %lu\n", *(DWORD*)(bytes + 0x0C + 4));
+    printf("Thread Number: %lu\n", (*(DWORD*)bytes + 0x40));
+
+    for (int i=0; i < 128; i++) {
+        printf("%02X ", bytes[i]);
+    }
+    printf("\n");
+
+
+    if (!ou) return 3;
+    return 0;
+
+}
+
+int localStack() {
+
+    unsigned long long* addr = _AddressOfReturnAddress();
+    printf("%p - %p\n", *(unsigned long long**)addr, addr - 8);
+
+    for (int i=0; i < 32; i++) {
+        printf("%02X ", ((unsigned char*)addr - 8)[i]);
+    }
+
+    CONTEXT c;
+    RtlCaptureContext(&c);
+
+    printf("rsp: %p\n diff: %p\n", c.Rsp, ((unsigned char*)addr) - c.Rsp);
+
+    return 0;
+
+}
+
+int printAsUnsignedChar(unsigned char* bytes, int len) {
+
+    printf("\nC:\nunsigned char tmp[] = {");
+    for (int i=0; i < len; i++) {
+        if (i == len - 1) {
+            printf("0x%02X };\n\n", bytes[i]);
+            break;
+        }
+        printf("0x%02X, ", bytes[i]);
+    }
+
+
+}
+
+int stealCode(void* hProcess, unsigned char* address, int len) {
+
+    readRawAddr(hProcess, address, len, 0, 0);
+
+    printf("\n\nasm:\n");
+    for (int i=0; i < functions[0].size; i++) {
+        if (functions[0].op[i].asm[0] == 00) break;
+        printf("%s %s\n", functions[0].op[i].mnum, functions[0].op[i].asm);
+    }
+
+    unsigned char* out = malloc(len);
+    ReadProcessMemory(hProcess, address, out, len, 0);
+    printAsUnsignedChar(out, len);
+
+    free(out);
     return 0;
 }
 
@@ -7685,7 +7804,7 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             if (sessionBuff[0] == 00) {
                                             printf("[!] Active Sessions\n");
-                                            ControlMotherShip("-list", "Glyph.exe", NULL);
+                                            ControlMotherShip("-list", "fiberdebug.exe", NULL);
                                             continue;
                                             }
 
@@ -7694,7 +7813,7 @@ BOOL WINAPI debug(LPCVOID param) {
                                             fgets(cmdBuff, 128, stdin);
                                             zero(cmdBuff, '\n');
 
-                                            ControlMotherShip(cmdBuff, "Glyph.exe", sessionBuff);
+                                            ControlMotherShip(cmdBuff, "fiberdebug.exe", sessionBuff);
 
                                             printf("\nCommand sent to [%s]\n", sessionBuff);
                                         }
@@ -7764,8 +7883,65 @@ BOOL WINAPI debug(LPCVOID param) {
                                                 
                                             }
 
+                                            printf("%p\n", addr);
                                             if (!addr) continue;                                            
                                             Patcher(hProcess, addr, 128);
+                                        }
+
+                                        else if (mystrcmp(buff, "!1850") == 0) {
+                                            oneeightfifty(hProcess, thread[0].address);
+                                            continue;
+                                        }
+
+
+                                        else if (strncmp(buff, "!print", 6) == 0) {
+                                            
+                                            // cancel on no address
+                                            if (buff[8] == 00) {
+                                            printf("Usage: !steal 0x<address>\n");                                         
+                                            continue;
+                                            }
+
+                                            unsigned char addrBuff[32];
+                                            unsigned long long addr = 0;
+                                            for (int i=0; i < 16; i+=2) {
+                                                addrBuff[i] = buff[9+i];
+
+                                                unsigned int nib = buff[9+i];
+                                                unsigned int nib2  = buff[9+i+1];
+
+                                                if (nib >= '0' && nib <= '9') {
+                                                    nib = nib - '0';
+                                                } else if (nib >= 'A' && nib <= 'F') {
+                                                    nib = nib - 'A' + 10;
+                                                } else {
+                                                    nib = nib - 'a' + 10;
+                                                }
+
+                                                if (nib2 >= '0' && nib2 <= '9') {
+                                                    nib2 = nib2 - '0';
+                                                } else if (nib2 >= 'A' && nib2 <= 'F') {
+                                                    nib2 = nib2 - 'A' + 10;
+                                                } else {
+                                                    nib2 = nib2 - 'a' + 10;
+                                                }
+
+                                                unsigned char byte = (nib << 4 | nib2);
+                                                addr = (addr << 8) | byte;
+                                                
+                                            }
+
+                                            if (!addr) continue; 
+
+                                            int num = atoi(buff+25);
+                                            if (!num) continue;
+
+                                            stealCode(hProcess, addr, num);
+
+                                            for (int i=0; i < 64; i++) {
+                                            buff[i] = 00;
+                                            }
+                                            continue;
                                         }
 
                                         else {
