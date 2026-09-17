@@ -1144,14 +1144,6 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                 writeCon("\n+++++++CALL-TRACE+++++++++\n");
                 }
 
-                // will remove so i dont call read so much
-                ReadProcessMemory(hProcess, target, &bytes, sizeof(bytes), NULL);
-                for (int i=0; i < sizeof(bytes); i++){
-                    printf("%02X ", bytes[i]);
-                    if ((i + 1) % 16 == 0) printf("\n");
-                }
-                printf("\n");
-
                 // 999 to catch ret or even jmp
                 unsigned char rawCall[999];
                 if (!ReadProcessMemory(hProcess, (void*)target, &rawCall, sizeof(rawCall), NULL)) {
@@ -1159,7 +1151,7 @@ BOOL disasm(HANDLE hProcess, uint8_t *code, int size, uint64_t address, int func
                     continue;
                 }
 
-                int newCount = cs_disasm(handle, bytes, sizeof(rawCall), target, 0, &insn2);
+                int newCount = cs_disasm(handle, rawCall, sizeof(rawCall), target, 0, &insn2);
 
                 if (newCount > 0) {
                     for (int j=0; j < newCount; j++) {
