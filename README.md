@@ -1,6 +1,6 @@
 ## GlyphDbg — A Introspection Engine for Windows
 
-GlyphDbg is not a traditional debugger. It is a byte‑accurate introspection engine designed for deep memory analysis, remote process exploration, and structural understanding of Windows binaries. It operates entirely through pure VEH‑based execution — no debugging APIs, no hardware breakpoints, no instrumentation frameworks.
+GlyphDbg is not a traditional debugger. It is a byte‑accurate introspection engine designed for deep memory analysis, remote process exploration, and structural understanding of Windows binaries. No debugging APIs, no hardware breakpoints.
 
 GlyphDbg lives inside the target process and gives you direct, deterministic access to:
 
