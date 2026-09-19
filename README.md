@@ -1,104 +1,53 @@
-GlyphDbg: A Ritual Engine for Remote Introspection
+## GlyphDbg — A Introspection Engine for Windows
 
-GlyphDbg is not a debugger in the traditional sense.
-It is a byte‑honest introspection engine — a deterministic ritual machine for walking memory, fracturing binaries, and interpreting execution as mythology.
+GlyphDbg is not a traditional debugger. It is a byte‑accurate introspection engine designed for deep memory analysis, remote process exploration, and structural understanding of Windows binaries. It operates entirely through pure VEH‑based execution — no debugging APIs, no hardware breakpoints, no instrumentation frameworks.
 
-It lives inside the target processes guts and builds a house.
+GlyphDbg lives inside the target process and gives you direct, deterministic access to:
 
-It uses pure VEH, no debugging APIs, no hardware breakpoints, no instrumentation frameworks.
+PEB and TEB structures
+Loader lists
+Thread state
+Memory regions
+Heap metadata
+Pointer graphs
 
-Compile
+It is written in pure C, matching the language of Windows NT itself, to ensure maximum clarity, determinism, and machine‑level control.
 
-cl /MD GlyphDbg.c
-*requires capstone libs
+Core Capabilities
 
-No C++
-No abstractions
-Just raw NT rituals
+1. VEH‑Driven Execution Engine
+Exception‑based breakpoints, symbolic fault lineage, and zero use of DebugActiveProcess.
 
-Core Features
+2. Remote PE Reconstruction
+Extract live code from memory and rebuild valid PE images, ideal for packers, malware, and JIT‑generated regions.
 
-PEB & TEB Ritualization
-Deep walking of PEB/TEB structures, loader lists, bitfields, process parameters, and ancestry.
-GlyphDbg treats the PEB as scripture — not metadata.
+3. Memory and Pointer Tools
+Commands for raw dumps, pre‑RIP context, pointer scanning, hotspot detection, heap walking, and region metadata.
 
-Pure VEH Execution Engine
-Exception based breakpoints
-access‑violations as signals
-symbolic fault lineage
-zero use of DebugActiveProcess
+4. Thread and Stack Exploration
+Enumerate threads, swap active threads, walk stacks without symbols, and capture register state at any address.
 
-Remote PE Reconstruction
-The !rebuild command extracts live code from memory and reconstructs a valid PE image:
-Ideal for malware, packers, and JIT‑generated regions.
+5. Import, Export, and DLL Mapping
+Remote IAT parsing, section walking, export scanning, and syscall stub extraction.
 
-Memory & Pointer Introspection
-!dump for raw memory
-!sub for pre‑RIP context
-!pointers for .data pointer scanning
-!hot for hotspot detection
-!heap for heap walking
-!mbi for memory region metadata
+6. Function Boundary Engine
+High‑accuracy function boundary detection across massive binaries, including those with hundreds of thousands of functions.
 
-Thread & Stack Rituals
-Enumerate threads
-Swap active thread
-Walk stacks without symbols
-Capture register state at any address
-Threads become navigable and swappable.
+7. Snapshot Diffing (Rift Engine)
+Compare two snapshots and highlight mutated functions, altered imports, and new DLLs.
 
-Remote Import & DLL Mapping
-!imports for remote IAT parsing
-!dllcheck for section walking
-!dllexp for export scanning and syscall stub extraction
-Hook detection through import anomalies.
+8. Optional Kernel Driver (glass.sys)
+Kernel memory reads, protected usermode reads, and kernel base discovery.
 
-Function Boundary Engine
-!func enumerates function boundaries across massive binaries, including 400k+ function images such as VS Code.
-Boundary heuristics, control‑flow scanning, section‑aware disassembly, and mutation‑zone detection.
-?? selects a random function using hardware entropy for exploration and chaos‑driven analysis.
-
-Undocumented API Glyphs
-Direct invocation of internal NT routines such as EtwpGetCpuSpeed, LsaGetUserName, and others.
-
-Stealth Engine
-Fiber‑based execution
-DR register manipulation
-Anti‑debug bypasses
-No debug handles
-No detectable footprint
-GlyphDbg remains unseen.
-
-Symbolic CLI
-A full command surface exceeding sixty commands, covering memory, threads, handles, DLLs, heap, PEB/TEB, CFG, networking, registry, CPU, kernel memory, snapshot diffing, and extension loading.
-
-Snapshot Diffing (Rift Engine) for bending time
-!rift compares two .slp snapshots and highlights:
-mutated functions
-altered imports
-new DLLs
-
-Kernel‑Assisted Rituals (glass.sys)
-Optional kernel driver enabling:
-kernel memory reads
-protected usermode reads
-kernel base discovery
-GlyphDbg becomes omniscient.
-
-Extension Engine
-!ext, !packs, !unload, !edit
-Load custom DLLs, write extensions, and expand the debugger without modifying the core.
-
-and much more!
+9. Extension Engine
+Load custom DLLs, write extensions, and expand GlyphDbg without modifying the core.
 
 Philosophy
 
-GlyphDbg is written in pure C because Windows NT is written in C.
+GlyphDbg is built on a simple belief:
+
 Introspection should speak the same language as the machine.
 
-GlyphDbg does not debug — it interprets.
-It treats faults as lineage, offsets as identity, memory as scripture, and mutation as meaning.
+Windows NT is written in C, so GlyphDbg is written in C. It prioritizes determinism, clarity, and byte‑level truth over abstractions or UI layers.
 
-Authored By
-SleepyG8
-Systems engineer and author of the GlyphDbg.
+GlyphDbg does not debug. It interprets execution, memory, and structure directly.
