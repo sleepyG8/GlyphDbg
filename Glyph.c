@@ -5232,7 +5232,7 @@ int bgrep(void* hProcess, void* address, int size, unsigned char* bytes, int byt
     __cpuidex(&info, 7, 0);
     if ((info[1] >> 16) & 1 == 1) {
     is512 = 1;
-    pad = 128 - (size % 128);
+    pad = (128 - (size % 128)) % 128;
     incNum = 128;
     }
 
@@ -5248,6 +5248,7 @@ int bgrep(void* hProcess, void* address, int size, unsigned char* bytes, int byt
 
     __m128i key = _mm_set1_epi8(bytes[0]);
 
+    int count = 0;
     for (int i=0; i < size; i+=incNum) {
 
         int mask = 0;
@@ -5257,7 +5258,7 @@ int bgrep(void* hProcess, void* address, int size, unsigned char* bytes, int byt
         __m512i bytecmp = _mm512_set1_epi8(bytes[0]);
         __mmask64  res = _mm512_cmpeq_epi8_mask(zmm, bytecmp);
         __mmask64  res2 = _mm512_cmpeq_epi8_mask(zmm2, bytecmp);
-        if (!res || !res2) {
+        if (res || res2) {
             mask++;
         }
         } else {
@@ -5277,7 +5278,7 @@ int bgrep(void* hProcess, void* address, int size, unsigned char* bytes, int byt
                 if (in[i+j+p] != bytes[j]) break;
 
                 if (j == bytelen - 1) {
-                    printf("0x%p [%p]\n", ((unsigned char*)address + i+p), i+p);
+                    printf("[%lu] 0x%p [%p]\n", count++, ((unsigned char*)address + i+p), i+p);
                 }
 
                 continue;
@@ -5893,6 +5894,16 @@ int oneeightfifty(void* hProcess, int tid) {
 
     printf("1850: %p\n", *(unsigned long long**)(derefDest + 0));
 
+    unsigned long long tmp = (unsigned char*)teb + 0x1720;
+    printf("Address: %p\n", tmp);
+
+    unsigned char Dest[256];
+    ReadProcessMemory(hProcess, tmp, &Dest, 256, &res);
+
+    for (int h=0; h < 256; h++) {
+        printf("%02X ", Dest[h]);
+    }
+
     unsigned char ou[24];
     ReadProcessMemory(hProcess, *(unsigned long long**)(derefDest + 0), &ou, sizeof(ou), 0);
 
@@ -5975,6 +5986,46 @@ int stealCode(void* hProcess, unsigned char* address, int len) {
 
     free(out);
     return 0;
+}
+
+typedef struct {
+    unsigned char command[128];
+    void* next;
+} Chain;
+
+Chain chain[10];
+
+int commandChain(unsigned char* buff) {
+
+    int currentChain = 0;
+    int currentBuff = 0;
+
+    for (int j=0; j < mystrlen(buff); j++) {
+
+        if (currentChain >= 10) break;
+
+        if (buff[j] == '&') {
+
+            if (currentChain == 0) {
+            strncpy(chain[currentChain].command, buff + currentBuff, j);
+            } else {
+            strncpy(chain[currentChain].command, buff + currentBuff, j - currentBuff);
+            }
+
+            currentChain++;
+
+            currentBuff += j + 1 - currentBuff;
+        }
+    }
+
+    if (currentBuff == 00) return 1;
+
+    return 0;
+}
+
+char* runChain(char* command) {
+    if (command[0] == 00) return NULL;
+    return command;
 }
 
 LARGE_INTEGER fq, co, end;
@@ -6109,7 +6160,11 @@ BOOL WINAPI debug(LPCVOID param) {
             ////////////////////////////////////////////////////////////////////
             // Each mystrcmp() is a feature, go down the list                   //
             ////////////////////////////////////////////////////////////////////
-                    while (1) {   
+            
+            int currentRun = 0;
+            int isChain = 0;
+
+                while (1) {   
                             
                             if (clipSniper == 1) {  // Clip sniper
                              clipHandle = CreateThread(NULL, 0, clipThread, hProcess, NULL, NULL);
@@ -6124,10 +6179,16 @@ BOOL WINAPI debug(LPCVOID param) {
                             
                             writeCon("\033[35mGlyphDbg>>\033[0m");
 
+                            unsigned char tmp[128];
+                            unsigned char* buff = tmp;
+
+                            // Check if we are in a chain else run normal cmdline loop or script or api
+                            if (currentRun == 0) {
+
                             // isAPI is a flag for both api usage and for the GUI
                             // dont worry, at the cost of an extra call, the gui api
                             // will gracefully return 3 if the GUI is not running.
-                            char* buff = checkForAPIUsage(hProcess, isAPI);
+                            buff = checkForAPIUsage(hProcess, isAPI);
                             if (buff == 0) {  // Normal CLI loop "fallback"
                             allocStdin(AllocatedRegion, offsetHandles + 200, stdin);
                             buff = (char*)readAlloc(AllocatedRegion, offsetHandles + 200);
@@ -6154,6 +6215,36 @@ BOOL WINAPI debug(LPCVOID param) {
                             if (cmdPacksStartup == 1 && cmdMod){
                                 loadCmdPack(buff, 0, 0);
                             }
+
+                            }
+
+
+                            // if previous chain ran do this
+                            if (isChain == 1) {
+
+                                // reset cmdline
+                                if (chain[currentRun].command[0] == 00) {
+
+                                    for (int h=0; h < 10; h++) {
+                                        for (int o=0; o < 128; o++) {
+                                            chain[h].command[o] = 00;
+                                        }
+                                    }
+
+                                    currentRun = 00;
+                                    isChain = 00;
+                                    continue;
+                                }
+
+                                char* string = runChain(chain[currentRun++].command);
+                                strcpy(buff, string);  
+
+                            } else if (commandChain(buff) == 0) { // check if commandChain return 0
+                                char* string = runChain(chain[currentRun++].command);
+                                strcpy(buff, string);
+                                isChain = 1;
+                            }
+
                             
                             //Check if its up and running still
                             // if (procCheck(secondParam, pi.dwProcessId) == 1) {
@@ -7251,8 +7342,10 @@ BOOL WINAPI debug(LPCVOID param) {
                                             for (int i=0; i < 500; i++) {
                                                 if (sus[i].address == 0) break;
                                                 printf("found suspicous region at 0x%p\n", sus[i].address);
-
                                             }
+
+                                            free(sus);
+                                            continue;
                                         }
 
                                         else if (mystrcmp(buff, "!rift") == 0) {
