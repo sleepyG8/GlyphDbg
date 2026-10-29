@@ -1,3 +1,5 @@
+[![RelatedRepos](https://img.shields.io/badge/related-repos-yellow)](https://relatedrepos.com/gh/sleepyG8/GlyphDbg)
+
 ## GlyphDbg — A Introspection Engine for Windows
 
 GlyphDbg is not a traditional debugger. It is a byte‑accurate introspection engine designed for deep memory analysis, remote process exploration, and structural understanding of Windows binaries.
