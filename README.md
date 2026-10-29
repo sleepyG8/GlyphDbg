@@ -53,3 +53,13 @@ Introspection should speak the same language as the machine.
 Windows NT is written in C, so GlyphDbg is written in C. It prioritizes determinism, clarity, and byte‑level truth over abstractions or UI layers.
 
 GlyphDbg does not debug. It interprets execution, memory, and structure directly.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=sleepyG8%2FGlyphDbg">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=sleepyG8/GlyphDbg&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=sleepyG8/GlyphDbg&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=sleepyG8/GlyphDbg&type=date&legend=top-left" />
+ </picture>
+</a>
