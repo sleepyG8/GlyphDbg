@@ -9,6 +9,7 @@
 #include "intrin.h"
 #include <immintrin.h>
 #include <IPTypes.h>
+
 //#include "starmusic.h"
 
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
@@ -1734,24 +1735,32 @@ int endWalk() {
 int findMZ(HANDLE hProcess) {
 
     DWORD num = 0;
+    int founddll = 0;
+
     unsigned char* base = 0x00007FF800000000;
 
     while (base < 0x7FFFFFFFFFFF) {
-    __try {
         
     num = getMBI(hProcess, base, 0);
-    
-    unsigned char MZ[10];
-    ReadProcessMemory(hProcess, base, &MZ, sizeof(MZ), NULL);
 
-    if (MZ[0] == 'M' && MZ[1] == 'Z') {
-        printf("MZ found at 0x%p\n", base);
-        getRemoteExports(hProcess, base, "", 0);
-        if (endWalk() == 1) return 0;
-        
+    if (num == 1) {
+        base += 0x1000;
+        continue;  
     }
 
-    } __except(1) {
+    unsigned char MZ[10];
+    if (!ReadProcessMemory(hProcess, base, &MZ, sizeof(MZ), NULL)) {
+        base += 0x1000;
+        continue;
+    }
+
+    if (MZ[0] == 'M' && MZ[1] == 'Z') {
+        founddll++;
+        printf("MZ found at 0x%p\n", base);
+        getRemoteExports(hProcess, base, "", 0);
+        if (founddll == countModules - 1) return 0;
+        if (endWalk() == 1) return 0;
+        
     }
 
     base += 0x1000;
@@ -5761,7 +5770,7 @@ BOOL CALLBACK EnumChild(HWND hwnd, LPARAM lParam) {
     
     unsigned short wname[128];
     GetClassNameW(hwnd, &wname, sizeof(wname));
-    //printf("child: %S\n", wname);
+    printf("child: %S\n", wname);
    
     // SendMessageA(hwnd, WM_SETTEXT, 0, "Hello This Gui has been hijacked");
 
@@ -5818,7 +5827,7 @@ BOOL CALLBACK EnumProc(HWND hwnd, int Inid) {
     GetWindowThreadProcessId(hwnd, &pid);
 
     if (Inid == pid) {
-    //printf("[+] Window Handle: %p %lu\n\n", hwnd, pid);
+    printf("[+] Window Handle: %p %lu\n\n", hwnd, pid);
     EnumChildWindows(hwnd, EnumChild, 0);
     }
 
@@ -6027,6 +6036,42 @@ char* runChain(char* command) {
     if (command[0] == 00) return NULL;
     return command;
 }
+
+// normal tls slots
+int tlsSlots(void* hProcess, int threadNum) {
+
+   void* hThread = OpenThread(THREAD_ALL_ACCESS, 0, threadNum);
+   void* (*qit)() = (void*)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQueryInformationThread");
+
+   unsigned char tbi[0x30];
+   NTSTATUS status = qit(hThread, 0, &tbi, sizeof(tbi), NULL);
+   if (!NT_SUCCESS(status)) return 2;
+
+   unsigned long long teb = *(unsigned long long**)((unsigned char*)tbi + 8);
+
+    unsigned long long bytes = 0;
+    ReadProcessMemory(hProcess, (unsigned char*)teb + 0x1480, &bytes, sizeof(bytes), 0);
+
+    int count = 0;
+    for (int i=0; i < 64; i++) {
+        unsigned long long tmp = 0;
+        ReadProcessMemory(hProcess, (((unsigned char*)teb + 0x1480) + i*8), &tmp, 8, 0);
+
+        if (!tmp) continue;
+        
+        printf("slot # %lu [0x%p]:\t%p\n", i, (((unsigned char*)teb + 0x1480) + i*8), tmp);
+    } 
+
+    if (!count) return 1;
+
+    return 0;
+}
+
+int CheckForUnlinkedDll() {
+
+    return 0;
+}
+
 
 LARGE_INTEGER fq, co, end;
 LPVOID fiberMain = 0;
@@ -7822,6 +7867,17 @@ BOOL WINAPI debug(LPCVOID param) {
                                             continue;
                                         }
 
+                                        else if (mystrcmp(buff, "!slots") == 0) {
+                                            for (int i=0; i < 255; i++) {
+                                            if (thread[i].state == 999) break;
+                                            printf("+++++++++++++++++++++++++++++++++++++\n");
+                                            tlsSlots(hProcess, thread[i].address);
+                                            printf("Thread ID: %lu\n", thread[i].address);
+                                            printf("+++++++++++++++++++++++++++++++++++++\n\n");
+                                            }
+                                
+                                            continue;
+                                        }
 
                                         else if (strncmp(buff, "!print", 6) == 0) {
                                             
