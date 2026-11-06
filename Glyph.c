@@ -785,6 +785,35 @@ int mygetlasterror() {
     return __readgsqword(0x68);
 }
 
+// got this from ntdoc https://ntdoc.m417z.com/thread_last_syscall_information
+// fun fact: current threads handle is ignored in same process (Throws a 0xC0000D)
+typedef struct _THREAD_LAST_SYSCALL_INFORMATION
+{
+    PVOID   FirstArgument;
+    USHORT  SystemCallNumber;
+    USHORT  Reserved;
+    ULONG64 WaitTime;
+} THREAD_LAST_SYSCALL_INFORMATION;
+
+// found this flag (21) in ntddk.h and investigated further
+int getLastSyscall(int threadNum) {
+ 
+    void* thread = OpenThread(THREAD_ALL_ACCESS, 0, threadNum);
+
+    NTSTATUS (*threadInfo)() = GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQueryInformationThread");
+
+    THREAD_LAST_SYSCALL_INFORMATION out;
+
+    int ret = 0;
+    NTSTATUS stat = threadInfo(thread, 21, &out, 24, &ret);
+    if (ret == 0) return 1;
+
+    printf("first arg:\t%p\n", out.FirstArgument);
+    printf("syscall:\t%p\n", out.SystemCallNumber);
+    printf("wait:\t\t%p\n", out.WaitTime);
+
+}
+
 int Score; // Globally Function tracking
 BOOL MalCheck(char* funcName) {
 
@@ -4318,7 +4347,7 @@ int stackWalk(void* hProcess, unsigned char* rsp) {
     char buff[0x1000];
     ReadProcessMemory(hProcess, rsp, &buff, sizeof(buff), NULL);
 
-    for (int i=0; i < sizeof(buff) / 8; i+=8) {
+    for (int i=0; i < sizeof(buff); i+=8) {
         if ((*(void**)((unsigned char*)buff + i)) == 00) continue;
         int sectionFound = 0;
         for (int j=0; j < 10; j++) {
@@ -7925,6 +7954,17 @@ BOOL WINAPI debug(LPCVOID param) {
 
                                             for (int i=0; i < 64; i++) {
                                             buff[i] = 00;
+                                            }
+                                            continue;
+                                        }
+
+                                        else if (strcmp(buff, "!lastsyscall") == 0) {
+                                            for (int i=0; i < 255; i++) {
+                                            if (thread[i].state == 999) break;
+                                            printf("+++++++++++++++++++++++++++++++++++++\n");
+                                            getLastSyscall(thread[i].address);
+                                            printf("Thread ID: %lu\n", thread[i].address);
+                                            printf("+++++++++++++++++++++++++++++++++++++\n\n");
                                             }
                                             continue;
                                         }
