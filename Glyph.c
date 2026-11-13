@@ -15,12 +15,17 @@
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004)
 
+#define model "qwen2.5-coder-1.5b-instruct-generic-gpu:4"               // will need to put your model name
+#define portNum 59325                                                   // port number cmd: (foundry server status)
+#define portchar "59325"
+
 #pragma comment(lib, "Iphlpapi.lib")
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "Psapi.lib")
 #pragma comment(lib, "Shell32.lib")
 #pragma comment(lib, "capstone.lib")
+#pragma comment(lib, "ws2_32.lib")
 #pragma comment(linker, "/alternatename:patch=patchFallback")
 
 extern void* patch();
@@ -6101,6 +6106,97 @@ int CheckForUnlinkedDll() {
     return 0;
 }
 
+int chat() {
+
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+    SOCKADDR_IN dat;
+    dat.sin_family = AF_INET;
+    dat.sin_addr.S_un.S_addr = inet_addr("127.0.0.1");
+    dat.sin_port = htons(portNum);
+
+    if (connect(sock, &dat, sizeof(SOCKADDR_IN)) == -1) {
+        printf("Error connecting\n");
+        return 1;
+    }
+
+    while(1) {
+
+    unsigned char cmd[1024] = {0};
+    printf("ai: ");
+    fgets(&cmd, sizeof(cmd), stdin);
+
+    if (strncmp(cmd, "/clear", 6) == 0) {
+        printf("\033[2J");
+        continue;
+    }
+
+    if (strncmp(cmd, "/exit", 5) == 0) {
+        closesocket(sock);
+        return 0;
+    }
+
+    printf("\n");
+    cmd[strlen(cmd) - 1] = 00;
+
+    unsigned char sendData[0x1000];
+    snprintf(sendData, sizeof(sendData), "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}]}", model, &cmd);
+
+    const char string[4096];
+    snprintf(string, sizeof(string),
+    "POST /v1/chat/completions HTTP/1.1\r\n"
+    "Host: 127.0.0.1:%s\r\n"
+    "Content-Type: application/json\r\n"
+    "Content-Length: %lu\r\n"
+    "\r\n"
+    "%s", 
+    portchar, strlen(sendData), sendData);
+
+    if (send(sock, string, strlen(string), 0) == -1) {
+        printf("Error sending\n");
+        return 1;
+    }
+
+    unsigned char inBuff[0x1000] = {0};
+    
+    int size = recv(sock, inBuff, sizeof(inBuff), 0);
+
+    int doit = 0;
+    for (int p=0; p < size; p++) {
+        if (strncmp(inBuff+p, "total_tokens\":", 14) == 0) {
+            doit = 1;
+        }
+    }
+
+    if (doit == 0) {
+    size += recv(sock, (inBuff + size), sizeof(inBuff) - size, 0);
+    }
+
+    for (int i=0; i < size; i++) {
+        if (strncmp(inBuff + i, "content\":\"", 10) == 0) {
+        for (int j=0; ; j++) {
+            if (inBuff[i+10+j] == '\\' && inBuff[i+10+j+1] == 'n') {
+                printf("\n");
+                i++;
+                continue;
+            }
+
+            if (strncmp(inBuff+i+10+j, "\",\"", 3) == 0) break;
+            printf("%c", inBuff[i+10+j]);
+        }
+        }
+    }
+
+    printf("\n");
+
+    }
+
+    return 0;
+}
+
 
 LARGE_INTEGER fq, co, end;
 LPVOID fiberMain = 0;
@@ -7966,6 +8062,11 @@ BOOL WINAPI debug(LPCVOID param) {
                                             printf("Thread ID: %lu\n", thread[i].address);
                                             printf("+++++++++++++++++++++++++++++++++++++\n\n");
                                             }
+                                            continue;
+                                        }
+
+                                        else if (strcmp(buff, "!ask") == 0) {
+                                            chat();
                                             continue;
                                         }
 
