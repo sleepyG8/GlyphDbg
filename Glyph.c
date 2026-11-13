@@ -15,6 +15,7 @@
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004)
 
+// Will add these into a .config file eventually
 #define model "qwen2.5-coder-1.5b-instruct-generic-gpu:4"               // will need to put your model name
 #define portNum 59325                                                   // port number cmd: (foundry server status)
 #define portchar "59325"
